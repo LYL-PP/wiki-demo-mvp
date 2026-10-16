@@ -1,0 +1,793 @@
+# 游戏研发知识 Wiki · 开发规格文档
+
+> **版本**：v1.5 ｜ **日期**：2026-10-16 ｜ **依据**：`wiki-demo-mvp/` 源码（线上 `?v=20261016h`）  
+> **线上地址**：<https://wiki-mvp-lab.app-tencent.workbuddy.host/>  
+> **适用对象**：接手本项目的开发、测试。本文只写**必须遵守的契约与判定规则**，不写设计讨论。
+
+---
+
+## 0. 一页摘要（先看这个）
+
+系统把游戏攻略/研发文档抽取成 **话题 → 实体** 的知识库，支持浏览、多维筛选、来源管理、知识库 Excel 导出、两版运行结果对比与对比结果导出。
+
+| 维度    | 要点                                            |
+| ----- | --------------------------------------------- |
+| 模型    | Entity-only，不引入 Spec                          |
+| 层级    | **只有一级话题**，不建目录树；话题是阅读分组，不复制实体                |
+| 产品线   | 产品/项目是**上下文锚点 + 独立分面**，不是话题本身                 |
+| 身份    | 一次提及（Mention）≠ 稳定身份（Entity），分开存储              |
+| 抽取流程  | 源文本先清站点噪声 → 按标题/章节结构化分片 → **两阶段请求**（先话题，后按已确认话题抽实体） |
+| 漏召回防线 | 模型须回 `coverage` 章节覆盖回执；程序比对源章节，缺章写诊断，**不丢候选** |
+| 模型职责  | 语义判断、结构化建议                                    |
+| 程序职责  | 解析、稳定 ID、证据/词表/外键校验、权限、幂等写库、发布门控              |
+| 红线    | **模型不得直接创建正式话题、Tag 或写库**；任何模型输出都必须过程序校验才落库   |
+
+**五条最容易出错的地方**（其余章节会展开）：
+
+1. 标题里的产品**不会**自动继承给全文实体。
+2. 版本分面**永远不能推断**。
+3. 新结构分面校验失败**一律丢弃**，不许降级成旧值。
+4. 已存在的受控 ID **不可删除、不可改义**，停用用 `deprecated`。
+5. 第二阶段（实体）输入必须是**精简输入**，不能拿单次完整输入再追加话题清单——会触发首字节超时。
+
+---
+
+## 1. 怎么读这份文档
+
+文档里会出现 `文件名:行号` 的定位，例如 `semantic-tags.js:158-181`。**行号只用于快速找到现状代码，它会随重构漂移；规则本身以函数名和文字描述为准。**
+
+### 1.1 规则的四种类型，要求强度不同
+
+| 类型              | 怎么识别                     | 对开发的要求                              |
+| --------------- | ------------------------ | ----------------------------------- |
+| **A 硬门禁**       | 不满足就 `return` 并记 issue 码 | **必须实现**，错了就拒绝，不许兜底猜                |
+| **B 兜底容错**      | 只在很窄条件（如"恰好只有一个"）下才生效    | 保持现状窄条件，**不得扩大**为通用规则               |
+| **C 实现细节**      | 只影响性能/可读性                | **只锁对外契约**，实现可自由重写                  |
+| **D Prompt 约束** | 只写在提示词文本里，代码无对应校验        | 模型软遵守；**必须问"程序侧在哪拦"**，拦不住要补 issue 码 |
+
+每条规则的完整表达 = **位置 + 类型 + 契约（输入/输出/拒绝条件）+ 验收用例 + 不要改什么**。本文已按这个结构写。
+
+### 1.2 标了 ⚠️ 的章节
+
+表示**规则尚未定稿或线上线下不一致**，动手前先确认，不要照着现状代码直接实现。见 §15、§13。
+
+---
+
+## 2. 模块与数据流
+
+```
+来源文件（浏览器档案 file-manager.js）
+  → 提取正文 + 清站点噪声                   pipeline.js wikiCleanSourceNoise
+  → 结构化分段（按标题/章节，段带 sectionPath）  pipeline.js splitSourceForModel
+  → 阶段一：话题候选 + coverage 覆盖回执       buildTopicStageInput / validateTopicStage
+  → 阶段二：按已确认话题抽实体                 buildEntityStageInput / validateEntityStage
+  → 全文整合（只输出归并映射）                 pipeline.js assembleIntegratedResult
+      ├ Mention（某段一次提及）
+      └ Entity（跨来源稳定身份，稳定 ID）
+          ├ 主类型 tags.type（受控 ET-*，单选）
+          ├ 分面 product / discipline / version
+          ├ candidate_tags（非正式）
+          └ relations（受控 RT-*）
+  → Topic（一级语义话题，PT-*）              pipeline.js wikiTopicCompatible 归并
+  → 章节覆盖率自检（只写诊断，不丢候选）         processSource 末段
+```
+
+| 文件                  | 职责                                        |
+| ------------------- | ----------------------------------------- |
+| `index.html`        | UI、浏览/筛选/详情、Excel 导出、两版对比导出、运行计时、运行门禁、词表编辑 |
+| `pipeline.js`       | STEP 1/6、噪声清洗与分段、两阶段候选校验、全文整合、身份归并、入库    |
+| `semantic-tags.js`  | 主类型解析、分面抽取、已存分面回读、产品上下文投影      |
+| `file-manager.js`   | 文件档案、来源贡献、撤回、事务、历史迁移           |
+| `prompt-history.js` | 共享提示词版本（追加式）                   |
+
+分层红线：
+
+1. Topic 只做**阅读分组**，不复制实体；跨话题只存 ID 引用。
+2. 产品/项目**不是话题本身**，是上下文锚点 + 独立分面。
+3. 系统**只有一级话题**，不建目录层级。
+4. Mention ≠ Entity：一次提及 vs 稳定身份，分开存储。
+
+---
+
+## 3. 数据契约
+
+### 3.1 Topic
+
+| 字段                          | 约束                                  |
+| --------------------------- | ----------------------------------- |
+| `id`                        | 非空唯一；预览级 `PT-*`                     |
+| `name`                      | 非空                                  |
+| `desc / definition / scope` | 至少一项可读描述                            |
+| `object_anchor`             | 对象锚点；归并比较项                          |
+| `core_question`             | 核心问题；归并比较项                          |
+| `includes[] / excludes[]`   | 归并比较项                               |
+| `quote` / `evidences[]`     | 逐字证据，必须能在原文定位                       |
+| `fileContributions[]`       | `{fileId, revision, legacy?, data}` |
+
+### 3.2 Entity
+
+| 字段                                  | 约束                                                        |
+| ----------------------------------- | --------------------------------------------------------- |
+| `id`                                | 稳定 ID                                                     |
+| `name`                              | 非空                                                        |
+| `disambiguator`                     | 同名消歧标签                                                    |
+| `primaryTopic`                      | 主话题 ID，且必须在 `topics[]` 中（有 `topics` 时）                    |
+| `topics[]`                          | 关联话题 ID                                                   |
+| `tags.type`                         | **单选**受控类型标签；`tags.typeId` 为 `ET-*`                       |
+| `identityAnchors`                   | `{ontologyType, realityDomain, productIpScope}`           |
+| `sources[]`                         | `{file, fileId, revision, quote/exact_quote, start, end}` |
+| `facts[] / aliases[] / relations[]` | 事实、别名、关系                                                  |
+| `reviewReasons[] / typeIssue`       | 复核原因                                                      |
+| `fileContributions[]`               | 同 3.1                                                     |
+
+### 3.3 Evidence（证据）· A 类硬门禁
+
+- 必须**逐字**存在于当次原文；
+- `start/end` 与原文切片一致，`end` 为**排他**；
+- 无偏移时须能用 `text.includes(quote)` 验证；
+- 历史来源 `text: null` → **不可验证，不得据此补任何值**。
+
+### 3.4 Facet（分面）
+
+```ts
+{value: string, basis: 'explicit'|'inferred'|'legacy'|'contextual',
+ quote: string, reason?: string, start?: number, end?: number, evidences?: Evidence[]}
+```
+
+| 分面                | 允许 basis                          |
+| ----------------- | --------------------------------- |
+| product 所属／适用产品   | `explicit`；（补全，见 §13）`contextual` |
+| discipline 相关研发专业 | `explicit` / `inferred`           |
+| version 内容适用版本    | **仅 `explicit`**，禁止推断             |
+
+展示口径：`explicit` 原文明示 ／ `contextual` 主话题上下文 ／ `inferred` 语义推断 ／ `legacy` 旧值未验证。
+
+### 3.5 Segment（分段，计算单位，不入知识）
+
+```ts
+{index:number, text:string, start:number, end:number,
+ coreStart:number, coreEnd:number, sectionPath?:string}
+```
+
+`sectionPath` 是段落在源文档中的标题路径（叶子为所在小节标题），无标题时为空串；用于覆盖率自检与提示词里的章节清单。
+
+### 3.6 Coverage（章节覆盖回执，话题阶段输出）
+
+```ts
+{source:string, decision:string, topic_id?:string, reason?:string, segment:number}
+```
+
+- `source` 为章节标题路径或叶子标题，须能与 `documentContext.sections` 匹配；
+- 是模型**自查**回执，不是证据；程序只用它做覆盖比对，不据此新增或删除话题。
+
+---
+
+## 4. 运行前置门禁（`index.html` `updateRunReadiness`）· A 类
+
+全部满足才允许运行：
+
+1. 无正在运行的任务；
+2. 有已提取、非空正文的来源（改正文会先撤销旧贡献）；
+3. 共享词表已从云端读回且 `workbookRowId === 1`；
+4. 模型列表就绪；
+5. 对比模式模型有效：「两版 Prompt」需 A；「同 Prompt 跨模型」需 A、B 且 **A ≠ B**；
+6. 提示词历史无未决操作；
+7. 冻结设置与同步等待已结束。
+
+运行前额外：`prompt flush()` 且 `!dirty && !blocked && !error`；词表在调用前重新读取。**未保存草稿不参与模型调用。**
+
+---
+
+## 5. 流水线规格
+
+| 步骤                  | 执行者    | 规格                                            |
+| ------------------- | ------ | --------------------------------------------- |
+| STEP 1              | 程序     | 提取正文、清站点噪声、结构化切段、冻结输入                         |
+| STEP 2–5 · 阶段一（话题）  | 模型（分段） | 只出话题候选 + `coverage` 章节覆盖回执                    |
+| STEP 2–5 · 阶段二（实体）  | 模型（分段） | 按阶段一已确认话题抽实体/归一/索引候选，**不得新增话题**               |
+| 全文整合                | 模型（全文） | **只输出归并映射**，不重写证据、不新增实体                       |
+| 组装校验                | 程序     | 证据重定位、外键复核、诊断隔离                               |
+| 章节覆盖率自检             | 程序     | 比对 `documentContext.sections` 与 `coverage`，缺章写诊断 |
+| STEP 6              | 程序     | 决策 `ready` / `type_review`，写本地预览              |
+
+容量与超时：
+
+- 单文件 ≤ 10 MB，正文 ≤ 30000 字；
+- 切段约 6000 字，**优先按标题/章节切**，段内再按段落/句末断点，段间重叠 ≤ 160 字；
+- 整合输入上限 100000 字符，**超限不截断、不调用、不写部分结果**；
+- **150 秒无数据 / 300 秒总超时**（`WIKI_IDLE_TIMEOUT_MS` / `WIKI_TOTAL_TIMEOUT_MS`）；`finish_reason='length'`、拒答、空流均不算成功；
+- JSON 先试完整解析，再试首个平衡对象；**不修补被截断的 JSON**。
+
+### 5.1 源文本噪声清洗（`pipeline.js` `wikiCleanSourceNoise`）· C 类实现细节
+
+抽取正文后立即执行，先于分段：
+
+- **行级规则**：命中导航/推荐/版权/互动/站点话术的行整行删除；
+- **块级规则**：命中块起始行（如「大家都在搜」「推荐阅读」「登录即可查看」）时，从该行删到块终止行（页脚 URL 行），块删不完则删到文末；
+- **保守兜底**：清洗后长度不足原文 **40%** 时**放弃清洗、保留原文**（宁可留噪声，不可削正文）；
+- 清洗只影响送入模型的文本与偏移基准；**证据偏移必须相对清洗后的正文**，`source.slice(start,end) === exact_quote` 仍然成立。
+
+> 噪声规则是**可调参数**，不是业务规则。中文规则不得使用 `\b`（中文属 non-word，边界永不匹配），用前缀/包含匹配。
+
+### 5.2 分段契约（`pipeline.js` `splitSourceForModel`、`wikiSectionBlocks`、`wikiSplitRange`）· C 类实现细节
+
+**实现可自由重写，只锁以下契约**：
+
+- 每段必须返回 `{index, text, start, end, coreStart, coreEnd, sectionPath?}`；
+- `coreStart/coreEnd` 是本段**负责的新内容区间**，用于证据偏移回溯；`start` 含重叠前文；
+- 全部偏移相对**原始正文**，不是相对本段；
+- `sectionPath` 为段落在源文档中的标题路径（如 `第三章 > 3.2 装备`），无标题时为空串；
+- 先按标题/章节划块，块内超长再按段落/句末切；**切分不得破坏证据可定位性**（偏移始终相对清洗后的整篇正文）。
+
+验收：
+
+1. 各段 `coreStart/coreEnd` 首尾相接、不重叠、并集覆盖全文；
+2. `source.slice(start, end) === text`；
+3. 空/纯空白输入返回 `[]`，不抛错；
+4. 标题文档切出的段 `sectionPath` 非空且顺序与原文一致。
+
+> 6000 字、160 字重叠是**可调参数**，不是业务规则。满足上面四条即可任意改切法。
+
+### 5.3 两阶段抽取 · A 类
+
+STEP 2–5 在同一段上发**两次**请求，不能合并成一次：
+
+| 阶段   | 输入构造                       | 模型输出契约                                              | 程序校验                  |
+| ---- | -------------------------- | --------------------------------------------------- | --------------------- |
+| 话题阶段 | `buildTopicStageInput`     | `{topics:[…], coverage:[…], review:[…]}`            | `validateTopicStage`  |
+| 实体阶段 | `buildEntityStageInput`    | `{entities:[…], review:[…]}`                        | `validateEntityStage` |
+
+硬约束：
+
+1. 实体阶段输入是**精简输入**（`buildModelInputCore({entitiesOnly:true, topics})`）：只含 step3/4/5 规则、受控词表、关系表与**阶段一已确认的话题清单**；**不含** step2 规则、`topics` 输出 schema 与历史话题。禁止拿单次完整输入再追加话题清单——输入比单次更长会触发首字节超时。
+2. 实体的 `topic_ids` / `primary_topic_id` 只能引用**阶段一已确认**的话题 ID；引用无效即丢弃该引用。
+3. 阶段一结果按段缓存（`stage='complete'` 后含话题与实体），实体阶段失败重跑时**复用已完成的话题阶段**，不重复请求。
+4. 候选缓存 key 含每段的 `sectionPath`；改任一输入即整段重算。
+5. 两个阶段的模型用量合并计入 `result.model`（`content_chars`、`stream_chunks`、`usage`），`segment_count` 仍是段数。
+
+保留 `buildModelInput`、`validateChunkCandidates` 原签名与行为（既有测试依赖），单次口径仍可用于对照。
+
+### 5.4 章节覆盖率自检（`processSource` 末段）· A 类
+
+- 源文档解析出的章节清单进 `documentContext.sections`；
+- 模型在话题阶段回 `coverage` 回执（`{source, decision, topic_id?, reason?}`），`source` 为章节标题路径或叶子标题；
+- 程序按 `wikiCoversSection` 匹配：完全相等 / 叶子相等 / 互相包含，且**先折叠空白再比、并额外比一次去空格形式**（抽取会在词内插空格，模型回执也会改写标题，逐字比会把每个章节都判成未覆盖）；
+- 结果写入 `result.diagnostics.coverage = {expected_sections, reported, missing}`，并在 `candidate_issues` 追加 `field:'topic_coverage'` 一条；
+- **只提示，不丢候选、不改抽取结果**；结果页概览显示「N 个章节中有 M 个未出现在模型回执」；
+- `sections` 为空时**整段自检不执行**（导出显示「未记录」）。因此「章节清单为空」不是良性降级，而是**必须先修的输入缺陷**——见 5.5。
+
+### 5.5 源文本行结构与标题识别 · A 类
+
+**背景（已定位的线上缺陷）**：PDF 抽取曾把每页所有文本项用空格拼成**一行**，5 页文档即 5 行、每行 460–1609 字。而 `wikiHeadingLevel` 对 **>100 字**的行直接返回 0，于是：
+
+- `sections` 恒为 `[]` → 提示词写死「本文档章节清单（**共 0 条**）」「当前段所属章节路径：（**未识别到章节**，按正文内容判断）」；
+- 覆盖率自检整段跳过 → 13 次历史导出里 `覆盖率自检 · 源章节数` **全部是「未记录」**；
+- 行级噪声规则也全部失配（整页不是噪声行）→ 站点噪声从未清除；
+- 模型拿到一篇无结构、混着站点 chrome 的长文本，只能自由扫读 → 话题数在 2–13 间大幅摆动，塌方轮次的返回正文长度掉到正常的 1/3，运行时长同步变短。
+
+**规格**：
+
+1. **PDF 抽取必须保留 pdf.js 的行尾标记**：`item.str + (item.hasEOL ? '\n' : ' ')`。丢掉 `hasEOL` 等于丢掉文档结构，属红线。
+2. **标题识别不得只认行首**：`wikiHeadingHits(line)` 先走行级规则；行长 >120 字时再按 `WIKI_HEADING_RULES` 在行内找标题，要求前一字符是分隔符（空白、`━`、`|`、标点）且**不是字母数字**（避免 `v4.15`、`1995MB` 误判）。
+3. **标题只取标题本体**：`wikiHeadingTitle(line, from, markerLength)` 保留编号（如 `1.`），跳过编号后的空白，再在 `。！？；`、连续空白、`━━` 处截断，上限 60 字；结果用 `wikiCollapseSpace` 折叠空白（`1.   武学系统` → `1. 武学系统`）。
+4. `documentContext.headings` 与 `sections` 共用同一套识别结果，**不再各写一套正则**。
+5. 上面的兜底不是可选项：即使换行丢失（其它抽取器、DOCX 行内标题），也必须有章节骨架，否则等于把召回全押在模型主动性上。
+
+验收：同一份 5 页 PDF，「每页一行」与「保留换行」两种输入**都**要识别出 ≥8 个章节且含编号小节；标题不得是光秃秃的编号；`splitSourceForModel` 仍首尾相接覆盖全文。
+
+### 5.6 证据定位不得静默丢弃 · A 类
+
+两条历史地雷，都会**整条删掉有效话题/实体**而不留痕迹：
+
+1. 模型给了 `start/end` 但偏移错位 → **必须回退到文本定位**（`alignQuoteToSource`），并在证据上标 `offset_corrected:true`；只有文本确实不存在时才丢弃。
+2. 引文在正文中出现多次且需要归一化 → **取首次出现并标 `ambiguous:true`**；过去 `haystack.indexOf(text, first+1)>=0` 直接返回 `null` 删掉证据。
+
+不变式仍然成立：`source.slice(start, end) === exact_quote`（组装阶段强校验，不等即抛错）。
+
+### 5.7 候选计数口径 · A 类
+
+导出必须能区分「模型少给」与「程序丢了」，否则每次塌方只能靠猜。`result.metrics` 固定包含：
+
+| 字段                                                    | 含义                    |
+| ----------------------------------------------------- | --------------------- |
+| `topicCandidatesReturned` / `entityCandidatesReturned` | 模型原始返回条数（校验前）         |
+| `topicCandidatesKept` / `entityCandidatesKept`         | 校验后保留条数               |
+| `evidenceOffsetCorrected` / `evidenceAmbiguous`        | 偏移被纠正条数 / 多处同文取首次的条数  |
+
+判读：`原始返回` 少 → 模型侧问题（输入/提示词）；`原始返回` 正常但 `保留` 少 → 程序侧问题（证据定位）。
+
+### 5.8 整合归并组的容错（`pipeline.js` `normalizeIntegrationGroups`）· A 类
+
+长文档会产出几十个归并组，**单个组不合规不得判死整轮**（历史行为：抛「整合归并组缺少ID/成员/决策/理由，或组ID重复」，整轮作废）。分级处理：
+
+| 缺陷                          | 处理                                     |
+| --------------------------- | -------------------------------------- |
+| 非对象 / 缺组ID / 组ID重复 / 缺成员      | **隔离该组**，其成员由「遗漏候选」兜底回收为独立 `review` 条目 |
+| `decision` 不是 `keep`/`review` | **降级为 `review`**，不信任未声明的归并               |
+| `reason` 缺失或空                | 填程序说明（**不补语义理由**），保留原决策，记诊断             |
+
+不变式：**候选全部有去向**，隔离只产生 `field:'integration_group'` 的诊断与 `review` 条目，不丢候选、不静默发布。修复数计入 `metrics.integrationGroupRepairs` 并进导出。
+
+> 这条属于「能由程序保证的事就不写进提示词」：不要靠加长提示词要求模型必填字段。
+
+### 5.9 整合输入的历史过滤（`pipeline.js` `integrationModelInput`）· A 类
+
+`historySnapshot.topics` 是**全库**历史。跑不同产品时，别人的话题只占预算、不可能等价。规则：丢弃 `object_anchor` 非空且**与当前所有话题锚点都不匹配**的历史话题；锚点为空的历史**保留**（无法判定，不从严）。
+
+---
+
+## 6. 话题拆分规则
+
+### 6.1 命名（`index.html:145`）· D 类 Prompt 约束
+
+必须同时避开两种极端：
+
+- 不得只用游戏/项目/IP 名（`王者荣耀`、`巫师3`）；
+- 不得用无具体问题的泛称兜底（`玩法`、`英雄`、`战斗系统`、`新手攻略`）。
+
+推荐句式：`产品/项目或具体对象 + 机制/场景 + 核心研发问题`，不机械套用。
+
+粒度取**最小可复用问题簇**：
+
+- 多个对象共同回答同一问题 → 同一话题；
+- 同一项目下不同问题 → 各自独立；
+- 不按每个 Entity/参数/段落/小节/文件名建话题；
+- **不要求至少两个实体**。
+
+综合文档按具体问题分别成题；只有项目名/标题而无可支持问题 → 复核或不输出，**禁止编造细节凑细话题**。
+
+> 代码**没有名称模板正则**。标题过长/过碎属 Prompt 层问题，改提示词而非加校验。短标题版 STEP 2 候选见附录 B，**启用与否待确认**。
+
+### 6.2 程序强制校验（`pipeline.js` `validateTopicStage` / `validateEntityStage`）· A 类
+
+- 必须有 `topics[]`（或兼容 `topic`）与 `entities[]`；
+- 分段文本须与原文起点逐字对齐，否则整段报错；
+- 话题名非空、本段话题 ID 不重复；
+- **话题证据无法逐字定位 → 该话题进复核，不进有效候选**；
+- 实体证据无法定位 → 只隔离该实体，其余继续；
+- 容错（`validateEntityStage` 内单话题兜底）· **B 类**：实体无 `topic_ids` 且本段**恰好一个**有效话题时，程序默认归入该话题。**这是兜底，不是归属证明，不得扩展为"总归入第一个话题"。**
+
+### 6.3 归并判定 `wikiTopicCompatible`（`pipeline.js:326`）· A 类
+
+**同时**满足四条才合并：
+
+1. `object_anchor`、`core_question` 均非空；
+2. 锚点归一相等，或：模型声明 `scope_equivalent:true` 且给了非空 `boundary_basis` 时，去后缀后相等；
+3. 核心问题归一相等，或走 `scope_equivalent` 分支；
+4. `scope` / `includes` / `excludes` 三组归一后完全一致，或走 `scope_equivalent` 分支。
+
+### 6.4 复用历史话题（`pipeline.js` `assembleIntegratedResult` 中历史话题边界校验）· A 类
+
+- 仅整合期可建议 `existing_topic_id`；
+- 校验：ID 存在 + 兼容判定通过 + 纳入/排除数组对得上；
+- 否则保留独立候选并记诊断，**不改历史卡片**；
+- 这里的"已有话题"是当前浏览器预览历史，**不是已核准的正式话题**。
+
+### 6.5 目录显示门槛（`index.html` `browseTopics` / `topicHasNonGameEntity`）· A 类
+
+```
+可浏览 ⟺ 实体数 ≥ 1
+        AND 至少 1 个实体具有「已确认、非 ET-PROD-GAME」主类型
+```
+
+- 按稳定类型 ID 判定，不按名称或产品分面；
+- 主类型待复核的实体**不计入**；
+- 这是展示过滤，**当前筛选不改变话题的浏览资格**；
+- 无有效实体的话题只进诊断 `isolated_topics` 与全库导出「话题清单」。
+
+---
+
+## 7. 实体规则
+
+### 7.1 准入 · D 类（实体准入 Prompt 文本）+ A 类（`pipeline.js` `validateEntityStage`）
+
+候选须**同时**满足：可明确指代、有实质证据、有具体复用价值。  
+排除孤立参数、纯标题、泛称、整段文档；分类不确定但有价值 → `review`。
+
+代码校验：名称与 ID 必填、本段 ID 不重复、证据可定位；否则隔离。
+
+### 7.2 身份归一 `wikiIdentityCompatible`（`pipeline.js:315`）· A 类
+
+Prompt 只允许 `reuse_existing` / `create_new` / `review`；名称、向量、共现**均不能单独授权合并**。
+
+| 比较项      | 实现                         |
+| -------- | -------------------------- |
+| 本体类型     | 有限归一映射（可玩角色/技能/npc/玩法）     |
+| 现实/虚构    | 去「语境/世界/域」后归一              |
+| 产品/IP 范围 | 去标点书名号后**必须相等**，缺失即不兼容     |
+| 名称/别名    | 必须有交集                      |
+| 版本       | 双方都有且不同 → 不兼容；**缺失可互补**    |
+| 身份属性     | 共有 key 值冲突才拆；**缺失是互补不是冲突** |
+
+**边界（现状）**：Prompt 提到的「关系邻域」「人工锁定字段」**未实现为同强度门禁**；当前决策实际只有 `create_new` / `review`。
+
+保存时本地合并用 `identityKey = 来源 + 名称 + 消歧标签 + 对象锚点`（`addLocalPreview` 中 `identityKey`），是**预览级**合并，不等于正式实体复用——**不要把两者混为一谈**。
+
+### 7.3 实体身份复核的上浮与理由自检（`pipeline.js` `assembleIntegratedResult` / `wikiReviewReasonContradictsEvidence`）· A 类
+
+整合阶段实体组 `decision === 'review'`（或任一组员候选为 `review`）时，程序必须把它写成**可见复核条目**，不得只停留在 `steps.step4.normalization_results` 里：
+
+1. 向 `review` 追加一条诊断 `{name, mention_id, field:'entity_identity', reason}`，`reason` 带模型给出的原始理由；
+2. 若理由断言"无描述 / 未提及 / 未涉及 / 缺乏描述 / 证据不足"等缺失类表述，而该组**已定位到非空逐字证据**，再追加 `{field:'entity_review_reason_conflict'}`，同时回写理由原文、证据条数与首条证据；
+3. 程序**保留 `review` 决策，不做语义改判**——是否成立仍由人工裁决；
+4. 计数写入 `metrics.entityIdentityReviews` 与 `metrics.contradictoryReviewReasons`，统计口径是**全部归并后实体**（含随后因无话题被隔离的），避免实体全被隔离时计数反而归零、门禁再次隐形；
+5. 入库实体 `reviewReasons` 追加 `ENTITY_IDENTITY_REVIEW`，复核队列（`typeReviewItems`）据此把「身份未裁决」与「主类型待复核」并列展示，复核计数徽标同时计入两者。
+
+`result.diagnostics` 与 `result.steps.diagnostics` 指向**同一个对象**；导出、覆盖率自检与界面诊断统一读 `result.diagnostics`。
+
+### 7.4 实体阶段的已确认话题清单（`pipeline.js` `buildModelInputCore` 实体阶段 opening）· A 类
+
+两阶段抽取的第二阶段必须把**已确认话题**交给模型时，清单项除 `id` / `name` / `scope` 外**还必须带上 `definition` 与 `includes`**：
+
+```js
+stageTopics.map(t => ({id: t.local_id || t.id, name: t.name, scope: t.scope,
+  definition: t.definition, includes: arr(t.includes)}))
+```
+
+规则：
+
+1. `includes`（纳入边界）是 STEP 3 逐条排查的检索清单；只给 `name` / `scope` 会让「按纳入边界找具名对象」退化成自由发挥；
+2. `includes` 一律用 `arr()` 归一，话题无该字段时序列化为 `[]`，**不得输出 `undefined`**；
+3. `excludes`（排除边界）**不下发**给实体阶段，避免模型把排除项误读为检索目标；
+4. 话题阶段（`buildTopicStageInput`）不含此清单，两阶段输入互不污染。
+
+**话题阶段空输出不得静默**：分段有实体候选但 `topics` 为空数组时，写入 `candidate_issues(field='topic_stage_empty')` 并说明「实体将全部因无有效话题证据被隔离，结果会是 0 话题 0 实体，这不是实体抽取失败」。程序仍按 0 候选继续，不伪造话题。
+
+---
+
+## 8. 索引规则
+
+### 8.1 主类型（`semantic-tags.js` `tagTypeDefinition` / `resolveTagType`）· A 类
+
+1. 稳定 ID **精确匹配**；`ET-` 开头但查不到 → null，**废弃 ID 不得借别名复活**；
+2. 标准名/别名须**唯一归一命中**，多义 → null；
+3. ID 与标签同时给出时必须等价，冲突 → null；
+4. **禁止**从实体名或身份锚点自动补类型；
+5. 整合期 `type_id` 建议须满足：active ID + 非空 `type_reason` + `type_quote` 能在**本组已定位实体证据**中逐字找到，否则隔离。
+
+失败处理：主类型置空 + `typeIssue` + `reviewReasons` 追加 `LEGACY_TYPE_REVIEW_REQUIRED` / `ENTITY_TYPE_REVIEW_REQUIRED` / `TYPE_TAG_CONFLICT`。
+
+### 8.2 分面结构化门禁（`semantic-tags.js:158` 起，函数 `addStructured`）· A 类
+
+**核心要求：新结构校验失败一律丢弃并记 issue，绝不降级成 legacy 字符串值。**
+
+输入是含 `value`、`basis`、`quote` 的对象。完整验收用例：
+
+| #  | 输入                                               | 期望                                                                      |
+| -- | ------------------------------------------------ | ----------------------------------------------------------------------- |
+| 1  | 分面是字符串（旧格式）                                      | 走旧字符串分支，**不进**本函数                                                       |
+| 2  | 分面不是对象（数字/数组）                                    | 拒绝，`INVALID_FACET_ENTRY`                                                |
+| 3  | `value` 缺失或为「未说明/未知/无/-」占位                       | 拒绝，`INVALID_FACET_VALUE`                                                |
+| 4  | `basis` 不是 `explicit`/`inferred`                 | 拒绝，`INVALID_FACET_BASIS`                                                |
+| 5  | `dimension=version` 且 `basis=inferred`           | 拒绝，`VERSION_NOT_EXPLICIT`（**版本永不推断**）                                   |
+| 6  | `basis=inferred` 且 `dimension≠discipline`        | 拒绝，`INFERENCE_NOT_ALLOWED`（**仅专业可推断**）                                  |
+| 7  | `basis=inferred` 但 `reason` 为空                   | 拒绝，`MISSING_INFERENCE_REASON`                                           |
+| 8  | `quote` 在当前原文 `indexOf` 找不到                      | 拒绝，`QUOTE_NOT_FOUND`（必须逐字存在）                                            |
+| 9  | `text.slice(start,end) !== quote` 或 `end` 与给定值不符 | 拒绝，`INVALID_QUOTE_OFFSETS`                                              |
+| 10 | `basis=explicit` 但归一后 quote 不含该取值                | 拒绝，`VALUE_NOT_IN_QUOTE`                                                 |
+| 11 | 以上全通过                                            | 落库 `{value, basis, quote, evidences:[{exact_quote,start,end}], reason}` |
+
+
+**不要改的地方**：
+
+- 不能把"校验失败"改成"按 legacy 保留"——旧值会污染筛选和导出；
+- 明示值比对**只放宽格式**（NFKC、去空白、去外围书名号），**不允许**用同义词归一补造证据；
+- `dimension=product` 时去书名号只去书名号，**不要**顺手去掉「外传」「续作」等后缀。
+
+### 8.3 分面关联门禁（`pipeline.js` `validateEntityStage` 内分面证据关联）· A 类
+
+非 legacy 分面证据必须与当前实体某条证据**区间重叠**，且满足「实体证据包含分面引用」**或**「引用含实体名/别名」。
+
+> **即：标题里的产品不会自动继承给所有实体。** 这是产品分面缺失类问题的根源，不要"优化"掉。
+
+`candidate_tags` 中带 `产品:` / `专业:` / `版本:` 前缀的值一律隔离，**不得当有效分面或筛选值**。
+
+### 8.4 关系（受控 RT-*，`pipeline.js` `normalizeControlledRelation` / `validateRelationEndpoints`）· A 类
+
+- 目标必须是本段有效、非自身的 Mention；
+- 必须可定位逐字证据；`strength ∈ {strong, weak}`；谓词非空；
+- `strong` 且证据含「共同出现/同一章节/同段」→ 隔离；
+- 受控 ID/标准名/别名须唯一归一命中；
+- 强弱、方向必须与词表定义一致；
+- 源/目标类型符合端点规则（支持 `*` 通配）；
+- 归并后再次复核：不自指、目标存在、端点仍匹配、证据重定位。
+
+**语义红线**：包含↔属于是逆向定义；对称关系不生成逆向证据、不推理传递；同源/同类/相似**绝不授权实体合并**。
+
+---
+
+## 9. 受控词表
+
+表名固定：`实体类型标签`、`业务分面`、`赋值与治理规则`、`关系类型`。
+
+| 表       | 关键列                                                                                     |
+| ------- | --------------------------------------------------------------------------------------- |
+| 实体类型标签  | 类型 ID ｜ 管理分组 ｜ 正式标签 ｜ 定义 ｜ 包含示例 ｜ 排除与边界 ｜ 赋值规则 ｜ 状态 ｜ 别名                                |
+| 业务分面    | 分面 ID ｜ 分面名称 ｜ 正式取值 ｜ 值类型 ｜ 基数 ｜ 值来源 ｜ 主要用途 ｜ 未命中处理                                     |
+| 赋值与治理规则 | 规则 ID ｜ 场景 ｜ 规则 ｜ 程序门控 ｜ 处理方式                                                           |
+| 关系类型    | 关系 ID ｜ 管理分组 ｜ 标准关系 ｜ 定义 ｜ 排除与边界 ｜ 强弱 ｜ 方向 ｜ 状态 ｜ 逆关系 ID ｜ 源类型 ｜ 目标类型 ｜ 同义词 ｜ 证据要求 ｜ 示例 |
+
+### 9.1 类型表校验（`index.html` `validateWorkbook`）· A 类
+
+- ID 匹配 `^ET-[A-Za-z0-9_-]+$`；正式标签非空不重复；状态 ∈ `active/deprecated/draft`；
+- **禁止恢复宽泛标签**：`对象/其他/机制/系统/美术/音频/技术/产品` 及其「／」开头形式；
+- `active` 行必须填定义与排除边界；
+- `active` 行的 ID、标准名、别名**全局唯一**；
+- 至少一个 active。
+
+### 9.2 演进禁写（`index.html` `validateWorkbookEvolution`）· A 类
+
+- **不得删除或改写已有 ID**；停用用 `deprecated`，新增另设 ID；
+- 已有关系 ID 的**强弱、方向、逆关系不可改写**；语义变化就新增 ID 并停用旧的；
+- 本地 xlsx 导入先进草稿，**只有保存并从云端读回后模型才用新版本**；
+- 并发编辑提示版本冲突，**不静默覆盖**；原始 Excel 不被改写。
+
+> 业务分面表定义**维度与参考值**，不是取值准入清单。产品/专业/版本由模型识别开放值，未绑定主数据。
+
+---
+
+## 10. 来源贡献与撤回
+
+贡献结构：`fileContributions: [{fileId, revision, legacy, data}]`。**同一实体在不同来源下的知识分开存**，展示层再合并（`file-manager.js:37-83`）。
+
+合并规则：
+
+- `sources/topics/aliases/facts/relations` 去重合并，`summary` 用「；」连接；
+- 多来源主类型不同 → `TYPE_TAG_CONFLICT`，主类型置空待复核；
+- 只放行「已知缺失协议中的真正空值」，嵌套成员冲突与有效建议冲突仍阻塞；
+- 关系目标不属于有效实体 → 剔除。
+
+撤回：
+
+| 操作   | 行为                                                                    |
+| ---- | --------------------------------------------------------------------- |
+| 删除文件 | `planFileRemoval()` 算影响面并二次确认 → 独有话题/实体删除，共享项仅撤销该来源贡献 → 事务提交 → 清空候选缓存 |
+| 修改正文 | `revision++`、状态置「待解析」、撤销旧版本贡献，**须重新解析**                               |
+| 仅改名  | 保留知识，只改显示名                                                            |
+
+
+事务（`file-manager.js:8-17`）· A 类：先比对 `fileWorkspaceRaw`，他页已改则抛错不覆盖；写失败按旧值回滚四个 key，抛「请立即导出备份」。
+
+历史迁移（`file-manager.js:18-36`）· A 类：旧数据按文件名建档案，`text: null`、`legacy: true`、打 `LEGACY_SOURCE_ATTRIBUTION_REVIEW`。**无正文的历史来源无法验证证据，不得自动补值。**
+
+---
+
+## 11. 浏览、筛选、耗时与导出
+
+### 11.1 筛选与详情 · A 类
+
+筛选语义（`index.html` `entityMatches` / `knowledgeScopedEntities`）· A 类：
+
+- **跨维度 AND**：topic、type、product、discipline、version、relation 各自命中；
+- **同维度多选 OR**；
+- 搜索框对整个实体 JSON 做小写包含匹配；
+- 关系筛选单选。
+
+详情必须包含：话题归属（主 + 关联）、主类型（含 typeId 与待复核说明）、分面（含 basis 标签与依据）、来源证据、关系列表（强弱/方向/受控 ID/目标可跳转性）、复核说明。
+
+### 11.2 知识库 Excel 导出（「导出 Excel」）· A 类
+
+5 张表：**话题实体对照、实体清单、来源证据、话题清单、导出说明**。
+
+- 所有单元格**强制文本**，不执行公式/超链接；
+- 超 30000 字符字段**拆到「长文本续页」**，不截断、可还原；
+- 导出不写知识、不写云、不调模型；
+- 全库导出不受搜索/筛选影响，隐藏话题仍保留；
+- **详情/列表/筛选/导出必须走同一套取值口径**，否则会出现"页面能筛出、导出没有"。
+
+### 11.3 运行耗时面板（`index.html` `wikiRunTiming`）· C 类
+
+- 计时从**接受本次点击**开始，到提示词同步、双版生成、保存与清理结束；文件正文提取不计入。
+- 三范围：`shared` 共享流程、`baseline`、`current`；并发事件按时间区间**合并为墙钟**，同时给出请求累计与次数。
+- 阶段清单预置（未执行也显示"未执行"）：`source / input / extraction_request / json_parse / topic_validation / entity_input / entity_validation / chunk_validation（单次口径，兼容保留）/ candidate_assembly / integration_input / integration_request / assembly / display / baseline_clone`。
+- 口径红线：**阶段存在嵌套与并发，不可相加为总耗时**；接口耗时含网络与模型服务，不能拆分；相同 Prompt 复用基线时只记 `baseline_clone`，不复制基线计时；缓存只统计本轮命中。
+
+### 11.4 两版对比导出（对比页「导出两版对比 Excel」/「导出对比 JSON」）· A 类
+
+导出**本轮两版真实运行结果**的横向对比，供人工比对与问题定位。无结果时两个按钮置灰。
+
+| 页签         | 内容                                                                        |
+| ---------- | ------------------------------------------------------------------------- |
+| 对比总览       | 来源/模型/词表版本/Prompt 指纹、耗时（总·提炼·整合）、正文字符·流帧·Tokens、话题/实体/Tag/关系、主类型待复核 / **实体身份复核 / 其中理由与证据矛盾**、候选与归并数、复核条目数、覆盖率自检、可预览状态；两版并列并给出数值差 |
+| 分支耗时       | 两版各自的本轮起点、结束点、独立处理秒数、结果状态、缓存命中                                            |
+| 耗时明细       | 逐阶段墙钟秒、执行次数、请求次数、请求累计秒、是否未完成                                              |
+| 话题清单       | 话题名/摘要/范围/对象锚点/核心问题/纳入排除边界/证据条数/首条证据/字符偏移/关联实体数                           |
+| 实体清单       | 名称/消歧/摘要/本体类型/虚构语境/IP 范围/版本锚点/归一决策与理由/主话题/主类型+ID+状态/产品·专业·版本分面/候选 Tag/别名/关系概况/证据与偏移 |
+| 关系清单       | 源实体 → 谓词（含受控 ID）→ 目标、强弱、方向、证据与偏移                                          |
+| 差异清单       | 与页面「查看变化」**共用 `diffSummary`**，口径必须一致                                      |
+| 诊断与隔离      | 候选问题、无实体隔离话题、隔离关系、复核项（含 `entity_identity` 与 `entity_review_reason_conflict`）、覆盖率自检未覆盖章节，以及本轮失败诊断 |
+| Prompt 快照  | **运行前冻结**的那套提示词全文（不是编辑器里未运行的新文本）                                          |
+| 导出说明       | 耗时口径、证据偏移、主类型/分面状态含义等口径说明                                                 |
+
+JSON 结构（便于转交分析）：
+
+```ts
+{app, exported_at, source:{name,id,revision,chars},
+ run:{attempt, started_at, status, outcome, stale, message, total_seconds, branches[], stages[]},
+ branches:[{key,label,model,source,workbook_revision,prompt_fingerprint,comparison,
+            metrics,integration,reconciliation,diagnostics,decision,preview_eligible,
+            topics[], entities[]（含 type/facets/relations/evidences）, prompts}],
+ diff:[{type,text}]}
+```
+
+硬约束：
+
+- 恒定**只读**：不调用模型、不写知识与云词表、不改动筛选/导航/存储；
+- **不得调用 `syncPrompt`**（会触发 `markResultsStale`，把导出变成一次"输入已变更"）；
+- 无计时记录（如刷新后）时耗时两张表**留空**，结果照常导出，不拿历史或估算值填充；
+- 单元格同样强制文本，超长字段完整拆分到长文本续页；
+- 结果与计时只存在于当前页面会话，刷新后仅结果保留、耗时为空。
+
+---
+
+## 12. 提示词版本
+
+- 版本单位是**完整快照**：`baseline` 与 `current` 各含 `step2/3/4/5/integration`；
+- 单项 ≤ 50000 字符，整体 JSON ≤ 700000 bytes；
+- 提交以最新云端为父版本**追加** revision，带 `parent_revision` 与 `request_id`；
+- 恢复是**新增一条 `restore` 修订**并记 `restored_from`，不删旧版；
+- 云端无记录时报「0 行」，**不自动 seed**；
+- 本地只在**逐字等于已知旧默认**时才升级 STEP 2/5/整合，自定义文本一律不动。
+
+---
+
+## 13. 失败、降级与缓存
+
+| 场景          | 行为                      |
+| ----------- | ----------------------- |
+| 提示词未同步/脏/冲突 | 禁止运行                    |
+| 词表未读回或草稿未保存 | 禁止运行                    |
+| 输入超容量       | 预检拦截，不截断                |
+| 超时/空流/截断/拒答 | 不算成功（150 秒无数据 / 300 秒总时限），可重试并复用已完成段 |
+| JSON 不合法    | 试首个平衡对象，不修补             |
+| 单候选证据/关系不合格 | 只隔离该项                   |
+| 整合映射不完整     | 报错，保留完成段，不写部分结果         |
+| 点击停止        | 取消活动请求；等待中的同步待当前请求返回后解锁 |
+| B 分支失败      | 保留 A 展示结果；B 不完整不入库      |
+| 话题阶段成功、实体阶段失败 | 重试只补实体阶段，话题阶段结果按段复用，不重复请求 |
+| 章节未出现在覆盖回执  | 只写诊断，保留全部候选，不重试、不删数据    |
+
+候选缓存 `wikiCandidateCache`：内存 Map，最多 8 组；key 含原文、来源 ID/名/修订、每段位置与文本、**段所在章节路径 `sectionPath`**、模型 ID 与配置、整套 Prompt、词表快照、历史快照。删文件/改正文即清空。**不跨浏览器、不上云。**
+
+---
+
+## 14. 产品上下文补全 ⚠️ 规格未定稿
+
+**目标**：实体主话题明确属于某产品、但自身引用未写产品名时，有依据地补出产品，使其可筛选。
+
+**现状**：线上已生效，本地与线上一致（`index.html` 取值为 contextual 投影，取不到时回退已存分面）。行为已定稿可用，但**规则条款仍待产品确认**，见 §16。
+
+准入顺序（`semantic-tags.js` `entitySemanticFacets`，自 308 行起）：
+
+1. 来源与 revision 完整且当前文件唯一；
+2. 无直接 `explicit` 产品（**显式优先**，有则不再追加不同值）；
+3. 当前贡献的 `primaryTopic` 有效且在 `topics[]` 内；
+4. 主话题存在**同来源同版本**绑定，且非 legacy；
+5. 实体自身证据通过验证；
+6. 产品角色来源三选一：
+   - 当前来源单一 `identityAnchors.productIpScope`；
+   - 同主话题、同来源同版本的**已确认 `ET-PROD-GAME` 实体**；
+   - 同条件下有直接 explicit 产品证据且证据关联的对象；
+7. 产品名须与主话题名 / `object_anchor` 边界一致（防 `X` 误配 `X2`、`X外传`）；
+8. 须有同来源逐字话题证据或可靠标题覆盖；
+9. 角色唯一且无冲突 → 产出 `basis:'contextual'`。
+
+诊断码（`productContextIssues`）：`PRODUCT_CONTEXT_CONTRIBUTION_AMBIGUOUS`、`SOURCE_UNBOUND`、`SOURCE_STALE`、`EVIDENCE_UNVERIFIABLE`、`EXPLICIT_PRIORITY`、`PRIMARY_INVALID`、`TOPIC_UNBOUND`、`ENTITY_EVIDENCE_MISSING`、`TOPIC_AMBIGUOUS`、`IDENTITY_AMBIGUOUS`、`SCOPE_CONFLICT`、`CONFIRMED_CONFLICT`、`MULTIPLE_PRODUCTS`、`INSUFFICIENT`。
+
+硬约束：
+
+- 只补**产品**，**不继承版本**；
+- 不写 Entity / 来源贡献 / localStorage，每次读取现算；
+- 来源删除、版本变化、话题移除后必须自动失效；
+- 不从关联话题广播；不把话题名当作产品；
+- 无正文历史来源**必须诊断拒绝**，不猜测、不自动重抽。
+
+---
+
+## 15. 实现红线
+
+**必须做**
+
+- 任何模型输出都当作**建议**：证据、类型、关系、分面须过程序校验才入库；
+- 所有写入走事务与版本比对，失败可回滚；
+- 浏览/筛选/详情/导出必须走**同一套取值口径**；
+- 新增索引值先做 `candidate`，治理后才升级正式；
+- 渲染主路径的**任一投影/派生失败都必须降级兜底，不得中断初始化**。
+
+**禁止做**
+
+- 禁止用实体名、话题名、`object_anchor` 直接推断产品或类型；
+- 禁止跨来源复制身份锚点；
+- 禁止修补截断 JSON、禁止写不完整结果；
+- 禁止删除或改写已有受控 ID；
+- 禁止在渲染主路径做全库 O(N²) 扫描；
+- 禁止把实体阶段输入做成"完整单次输入 + 追加话题清单"——必须走精简输入；
+- 禁止在导出路径触发任何状态变更（含 `syncPrompt` / `markResultsStale`）；
+- 禁止为"让表格好看"裁剪或估算导出数据：无数据留空并说明，不拿历史值顶替；
+- 禁止自动重抽用户文件、禁止静默覆盖他人共享配置。
+
+---
+
+## 16. 当前状态与交接待办 ⚠️
+
+| 项              | 状态                                                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------------------------------- |
+| 线上应用           | `https://wiki-mvp-lab.app-tencent.workbuddy.host/`                                                                  |
+| 产品上下文补全        | 线上**已生效**，本地与线上一致（contextual 投影 + 取不到回退已存分面）；⚠️ 规则条款待确认，见 §14                                                       |
+| 共享提示词          | 头部为 v5 内容；v6（短标题版）已回退，v7 是 restore 记录，历史未删                                                                          |
+| 线上「页面空白、按钮无响应」 | **未定位完成**。新开无数据浏览器表现正常，因此不能据此判定用户数据已丢失                                                                              |
+| 线上静态资源         | 脚本已带 `?v=20261015f` 版本戳；响应仍**无 `Cache-Control` / `ETag`**，`index.html` 本身可能被中间缓存，旧 HTML 配新 JS 的窗口未完全关闭 |
+
+已排除项（不必重复排查）：
+
+- 线上 `semantic-tags.js` / `pipeline.js` / `file-manager.js` 与本地逐字节一致；
+- 纯性能非主因：400 实体投影约 412ms；
+- 渲染路径不抛错：注入 8 种历史数据变体（旧 schema、缺 fileId、无正文、话题无证据、贡献缺 data、legacy 话题、1200 实体）均无异常，1200 实体渲染约 3.5s。
+
+建议优先级：
+
+1. **定位白屏**：渲染路径对缺失/异常做降级兜底，任一投影失败不得中断初始化；
+2. 收口静态资源版本一致性：JS 已带 `?v=` 版本戳，仍需为 `index.html` 补缓存头或强制刷新策略（旧 HTML 配新 JS 时页面已有「脚本版本不一致」提示与降级）；
+3. 再决定是否保留产品上下文补全；若保留，需加规模上限与只读缓存，**禁止每次渲染重建全库索引**。
+
+---
+
+## 17. 验收清单（可直接转测试用例）
+
+- **话题**：名称不合规则 / 证据不可定位 / 归并边界不符 → 进复核或隔离，不静默入库；
+- **实体**：身份归一六项比较全部生效；同名不同锚点不合并；「属性缺失」按互补处理而非冲突；
+- **身份复核**：`decision=review` 的实体组必须写入 `candidate_issues(field=entity_identity)` 并计入 `metrics.entityIdentityReviews`；理由断言缺失但已有证据时另写 `entity_review_reason_conflict`；复核队列与计数徽标同时展示「身份未裁决」与「主类型待复核」；程序不改写 `review` 决策；
+- **类型**：废弃 ID 不复活；多义别名返回 null；不自动补类型；
+- **分面**：产品不继承标题；版本不推断；非专业维度不允许 inferred；推断必须有 reason；§8.2 的 11 条用例全过；
+- **关系**：自指、目标失效、强弱/方向不符、端点不匹配全部隔离；
+- **撤回**：删文件 / 改正文 / 改名三种行为符合 §10；
+- **词表**：禁写规则生效；并发冲突提示不覆盖；
+- **噪声清洗**：站点噪声行/块被清除、正文关键句不丢；清洗后不足原文 40% 时放弃清洗；清洗后偏移仍满足 `source.slice(start,end) === exact_quote`；
+- **分段**：`coreStart/coreEnd` 首尾相接覆盖全文、`source.slice(start,end) === text`、空输入返回 `[]`；带标题文档切出的段 `sectionPath` 非空且有序；
+- **两阶段**：话题阶段输出 `topics + coverage`、实体阶段输出 `entities`，两个 schema 均能被 `JSON.parse` 接受；实体输入**小于**单次输入；实体只引用阶段一已确认话题；实体阶段失败重跑不复请求话题阶段；
+- **覆盖率**：漏章写入 `diagnostics.coverage.missing` 与 `candidate_issues(field=topic_coverage)`，候选一条不丢；
+- **导出**：知识库 5 表齐全、单元格文本化、长文本续页可还原、无副作用；
+- **对比导出**：10 页签齐全、两版并列且差值正确、差异与页面「查看变化」一致、无计时时不编造耗时、JSON 可解析且字段完整、导出后结果/Prompt/存储指纹不变；
+- **诊断可达**：`result.diagnostics` 与 `result.steps.diagnostics` 同一对象；`候选问题 / 无实体隔离话题 / 隔离关系 / 复核项` 四类在导出与界面均可见，覆盖率自检可写入 `diagnostics.coverage`；
+- **提示词**：追加版本、恢复留痕、旧版可读回；
+- **全流程**：无真实模型请求、无云写、storage 与业务数据指纹不变。
+
+---
+
+## 附录 A · 代码位置索引
+
+> 行号取自 v1.5 快照（线上 `?v=20261016h`），会随重构漂移；**定位以文件 + 函数名为准**。
+
+| 位置                                                                                                                | 类型 | 一句话说明                                              |
+| ----------------------------------------------------------------------------------------------------------------- | -- | -------------------------------------------------- |
+| `index.html` `updateRunReadiness`                                                                                   | A  | 运行前置七项门禁                                           |
+| `index.html` `browseTopics` / `topicHasNonGameEntity`                                                               | A  | 话题目录显示门槛（≥1 实体 且 ≥1 已确认非游戏主类型）                     |
+| `index.html` `validateWorkbook`                                                                                     | A  | 主类型词表校验（禁宽泛标签、active 唯一）                           |
+| `index.html` `validateWorkbookEvolution`                                                                            | A  | 词表演进禁写（ID 不可删改，停用用 deprecated）                     |
+| `index.html` `knowledgeEntitySemanticFacets`                                                                        | ⚠️ | 产品上下文取值入口（contextual 投影 + 取不到回退已存分面），规则待确认         |
+| `index.html` `entityMatches` / `knowledgeScopedEntities`                                                            | A  | 筛选语义（跨维度 AND、同维度 OR）                               |
+| `index.html` `knowledgeExportSnapshot` / `exportKnowledgeExcel`                                                     | A  | 知识库 Excel 导出 5 表                                   |
+| `index.html` `wikiRunTiming`                                                                                        | C  | 运行耗时面板：三范围、阶段预置清单、墙钟合并与请求累计口径                      |
+| `index.html` `compareExportSnapshot` / `compareExportWorkbook` / `exportCompareExcel`                               | A  | 两版对比导出 · Excel 10 页签                               |
+| `index.html` `compareExportPayload` / `exportCompareJson` / `updateCompareExportState`                              | A  | 两版对比导出 · JSON 与按钮可用性，只读、不调 `syncPrompt`            |
+| `index.html` 实体/话题准入 Prompt 文本                                                                                     | D  | 需 `validateEntityStage` / `validateTopicStage` 兜底校验  |
+| `semantic-tags.js` `tagTypeDefinition` / `resolveTagType`                                                           | A  | 主类型解析与降级（未命中进 candidate）                           |
+| `semantic-tags.js:158` 起 `addStructured`                                                                           | A  | 分面结构化门禁（见 §8.2 完整用例）                               |
+| `semantic-tags.js` `semanticFacetStorage`                                                                           | A  | 已存分面回读（页面/导出共用同一口径）                                |
+| `semantic-tags.js` `entitySemanticFacets`（自 308 行起）                                                                | ⚠️ | 产品上下文投影，规格待定稿                                      |
+| `pipeline.js` `wikiCleanSourceNoise`                                                                               | C  | 源文本站点噪声清洗，保守兜底（清洗后 <40% 则放弃）                       |
+| `pipeline.js` `splitSourceForModel` / `wikiSectionBlocks` / `wikiSplitRange`                                        | C  | 结构化分段，段带 `sectionPath`，只锁 `coreStart/coreEnd` 契约     |
+| `pipeline.js` `wikiDocumentContext`                                                                                | C  | 文档背景与 `sections`（覆盖率自检的章节基准）                       |
+| `pipeline.js` `buildTopicStageInput` / `validateTopicStage`                                                         | A  | 阶段一：话题候选 + `coverage` 回执校验                         |
+| `pipeline.js` `buildEntityStageInput` / `validateEntityStage`                                                       | A  | 阶段二：精简输入（entitiesOnly）+ 实体校验，只引用阶段一已确认话题           |
+| `pipeline.js` `buildModelInputCore` / `buildModelInput`                                                            | C  | 单次 / 精简输入参数化，原签名保留                                 |
+| `pipeline.js` `validateChunkCandidates`                                                                            | A  | 单次口径候选校验（两阶段组合，供对照与旧测试）                            |
+| `pipeline.js` `WIKI_IDLE_TIMEOUT_MS` / `WIKI_TOTAL_TIMEOUT_MS`                                                      | A  | 150 秒无数据 / 300 秒总时限                                |
+| `pipeline.js` `processSource`                                                                                      | A  | 两阶段调度、分段缓存（`sectionPath` 入 key）、末段章节覆盖率自检          |
+| `pipeline.js` `wikiCoverageNote`                                                                                   | C  | 结果页覆盖率提示文案                                        |
+| `pipeline.js` `normalizeControlledRelation` / `validateRelationEndpoints`                                           | A  | 关系门禁与端点类型复核                                        |
+| `pipeline.js` `wikiIdentityCompatible`（315 行）                                                                      | A  | 身份归一六项比较                                           |
+| `pipeline.js` `wikiTopicCompatible`（326 行）                                                                         | A  | 话题归并（四条同时满足）                                       |
+| `pipeline.js` `assembleIntegratedResult`                                                                           | A  | 全文整合映射、历史话题边界校验、主类型整合选择                             |
+| `pipeline.js` `addLocalPreview`                                                                                    | B  | 预览级 identityKey 合并与本地写入                            |
+| `file-manager.js` 写入事务 / 历史迁移 / 来源贡献                                                                              | A  | 事务回滚、无正文不补值、来源贡献分离存储与合并                             |

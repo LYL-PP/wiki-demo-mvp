@@ -1,0 +1,7 @@
+node_modules/
+.playwright-cli/tmp-live/
+.playwright-cli/tmp-*.txt
+.playwright-cli/tmp-*.json
+*.log
+.DS_Store
+Thumbs.db

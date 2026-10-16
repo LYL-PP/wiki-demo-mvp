@@ -1,0 +1,54 @@
+const {chromium}=require('C:/Users/louisxzlu/.workbuddy/binaries/node/workspace/node_modules/playwright');
+const fs=require('fs'),vm=require('vm'),crypto=require('crypto');
+const root='C:/Users/louisxzlu/WorkBuddy/2026-09-18-16-22-25',base='https://wiki-mvp-lab.app-tencent.workbuddy.host/',mode=process.argv[2]||'local';
+const html=fs.readFileSync(root+'/wiki-demo-mvp/index.html','utf8');
+for(const m of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g))new vm.Script(m[1]);
+for(const name of ['pipeline.js','file-manager.js'])new vm.Script(fs.readFileSync(root+'/wiki-demo-mvp/'+name,'utf8'));
+(async()=>{const browser=await chromium.launch({channel:'chrome',headless:true});try{
+ const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[],blocked=[],report={mode,tests:[]};page.on('pageerror',e=>errors.push(e.message));
+ await page.route('**/*',r=>{const q=r.request();if(q.url().includes('/.cloud/')&&!['GET','HEAD','OPTIONS'].includes(q.method())){blocked.push(q.method());return r.abort()}return mode==='local'?r.abort('blockedbyclient'):r.continue()});
+ if(mode==='local'){
+  await page.route('https://cdn.jsdelivr.net/**',r=>r.fulfill({contentType:'application/javascript',body:''}));
+  await page.route(base+'**',r=>{const p=new URL(r.request().url()).pathname;if(r.request().method()!=='GET')return r.abort('blockedbyclient');if(p.startsWith('/.cloud/'))return p.startsWith('/.cloud/llm/')?r.abort('blockedbyclient'):r.fulfill({contentType:'application/json',body:'{"data":[]}'});/* 仅隔离旧逻辑回归，不代表全应用；新模块仍请求加载但返回空脚本。 */if(p==='/prompt-history.js')return r.fulfill({contentType:'application/javascript',body:''});if(['/semantic-tags.js','/pipeline.js','/file-manager.js'].includes(p))return r.fulfill({contentType:'application/javascript',body:fs.readFileSync(root+'/wiki-demo-mvp'+p,'utf8')});return r.fulfill({contentType:'text/html',body:html.replace('<script>wikiPromptHistory.init();init();</script>','<script>initCloud=async()=>{};init();</script>')})});
+ }
+ await page.goto(base,{waitUntil:'domcontentloaded'});
+ if(mode!=='local'){
+  await page.waitForFunction(()=>workbookReady&&availableModels.length>0,null,{timeout:45000});
+  const w=await page.evaluate(()=>({revision:workbookRevision,sheets:savedWorkbook.sheets.length,types:controlledTypes().length,relations:controlledRelations().length,data:savedWorkbook}));
+  report.workbook={revision:w.revision,sheets:w.sheets,types:w.types,relations:w.relations,fingerprint:crypto.createHash('sha256').update(JSON.stringify(w.data)).digest('hex')};
+  if(mode==='before'){fs.writeFileSync(root+'/outputs/wiki-type-review-before.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report));return}
+  const before=JSON.parse(fs.readFileSync(root+'/outputs/wiki-type-review-before.json','utf8'));if(JSON.stringify(report.workbook)!==JSON.stringify(before.workbook))throw Error('共享词表发生变化');
+  report.assets=[];for(const n of ['index.html','pipeline.js','file-manager.js','游戏研发知识Wiki受控索引标签词表.xlsx']){const r=await page.request.get(base+encodeURIComponent(n)+'?typeReview=20261010');const same=r.ok()&&(await r.body()).equals(fs.readFileSync(root+'/wiki-demo-mvp/'+n));report.assets.push({name:n,same});if(!same)throw Error('线上资源不一致 '+n)}
+ }
+ report.tests=await page.evaluate(()=>{
+  const tests=[],ok=(test,pass)=>{tests.push({test,pass:!!pass});if(!pass)throw Error(test)};
+  const w={sheets:[{name:'实体类型标签',rows:[[],[],[],[],['ET-weapon','对象','武器','','','','','active'],['ET-skill','玩法','技能','','','','','active']]},{name:'业务分面',rows:[]},{name:'赋值与治理规则',rows:[]}]};w.sheets.push(defaultRelationSheet());
+  savedWorkbook=w;draftWorkbook=structuredClone(w);workbookReady=true;workbookRevision=2;
+  const t={id:'T-example',name:'测试游戏武器的资源消耗',scope:'资源消耗',desc:'界面回归示例',preview:true};
+  const make=(id,name,type)=>({id,name,summary:'仅用于验证界面的示例，不是真实模型结果。',preview:true,primaryTopic:t.id,topics:[t.id],tags:{type:type?[type]:[],typeId:type?'ET-weapon':null},suggestedFacets:{product:['测试游戏'],discipline:['策划'],version:[]},candidateTags:['探索词'],sources:[],facts:[],relations:[],reviewReasons:['NEW_TOPIC_CANDIDATE','INTEGRATION_REVIEW','ENTITY_TYPE_REVIEW_REQUIRED','MODEL_TAGS_FACETS_UNVERIFIED']});
+  const good=make('good','有类型的武器','武器'),missing=make('missing','无类型的对象',null);
+  commitFileWorkspace([], [t], [good,missing]);state.selectedEntity=good.id;state.current={metrics:{reviews:100}};state.resultsStale=false;setPage('knowledge');
+  ok('旧整批原因不导致合法实体复核',!entityTypeReviewNeeded(good));ok('无主类型进入复核',entityTypeReviewNeeded(missing));ok('类型停用或词表外进入复核',entityTypeReviewNeeded({...good,tags:{type:['不存在']}}));ok('ID与类型不匹配进入复核',entityTypeReviewNeeded({...good,tags:{type:['武器'],typeId:'ET-skill'}}));ok('无ID但合法标签无需复核',!entityTypeReviewNeeded({...good,tags:{type:['武器']}}));ok('词表未加载不误判非空类型',!entityTypeReviewNeeded(good,null));
+  ok('复核只计缺类型实体且不加整批项',document.getElementById('reviewCount').textContent==='1');
+  renderReview();ok('复核列表只有缺类型对象',document.querySelectorAll('#reviewBody .review-item').length===1&&!document.getElementById('reviewBody').textContent.includes('有类型的武器'));ok('主类型复核可跳转实体',!!document.querySelector('#reviewBody [data-review-entity="missing"]'));
+  ok('话题卡没有默认复核',!document.getElementById('topicStrip').textContent.includes('复核'));ok('列表没有统一未发布和候选复核',!document.getElementById('entityRows').textContent.includes('未发布')&&!document.getElementById('entityRows').textContent.includes('本地待复核预览'));ok('列表保留缺类型提示',document.querySelector('[data-entity="missing"]').textContent.includes('主类型待复核'));ok('合法实体没有复核提示',!document.querySelector('[data-entity="good"]').textContent.includes('复核'));
+  ok('详情没有整体复核状态与原因码',!document.getElementById('entityDetail').textContent.includes('复核状态')&&!document.getElementById('entityDetail').textContent.includes('NEW_TOPIC'));ok('分面和候选Tag不再待确认复核',!document.getElementById('entityDetail').textContent.includes('待确认'));
+  state.selectedEntity=missing.id;renderKnowledge();ok('详情缺类型提示仍在',document.getElementById('entityDetail').textContent.includes('未命中 · 待复核'));ok('复核去重按ID',(()=>{state.previews.push(missing);const n=typeReviewItems().length;state.previews.pop();return n===1})());
+  state.selectedEntity=good.id;state.previews=[good];renderKnowledge();renderReview();ok('只有合法实体时复核为零',document.getElementById('reviewCount').textContent==='0'&&document.getElementById('reviewBody').textContent.includes('没有待复核实体'));
+  const source='武器甲消耗资源乙。',part={index:1,text:source,start:0,end:source.length};
+  const raw={topics:[{id:'T1',name:'测试游戏武器的资源消耗',scope:'资源消耗',object_anchor:'测试游戏',core_question:'资源消耗',quote:source}],entities:[{id:'M1',name:'武器甲',type:'武器',quote:source,definition:'测试武器',topic_ids:['T1'],primary_topic_id:'T1',anchors:{ontology_type:'武器',reality_domain:'虚构',product_ip_scope:'测试游戏'},relations:[{predicate:'词表外关系',target:'M2',strength:'strong',quote:source}]},{id:'M2',name:'资源乙',type:'武器',quote:source,definition:'测试资源',topic_ids:['T1'],primary_topic_id:'T1',anchors:{ontology_type:'武器',reality_domain:'虚构',product_ip_scope:'测试游戏'}}],review:[{name:'不确认的归并',reason:'保持独立'}]};
+  const mapping={topic_groups:[{id:'GT1',members:['P1-T1'],decision:'keep',reason:'独立问题'}],entity_groups:[{id:'GE1',members:['P1-M1'],decision:'keep',reason:'独立身份',topics:['GT1'],primary_topic:'GT1'},{id:'GE2',members:['P1-M2'],decision:'keep',reason:'独立身份',topics:['GT1'],primary_topic:'GT1'}]};
+  const context={parts:[part],sourceName:'回归示例.txt',snapshot:{revision:2,workbook:w},historySnapshot:{topics:[],entities:[]}};
+  const c=validateChunkCandidates(raw,part,source,w),r=assembleIntegratedResult(c,mapping,source,context);r.model={id:'fixture',segment_count:1};
+  ok('合法类型结果不固定人审',r.steps.step6.decision==='ready'&&r.steps.step6.review_reasons.length===0&&r.metrics.reviews===0);ok('无效关系仍隔离而非放行',r.metrics.relations===0&&r.reconciliation.discardedRelations.length===1);ok('非类型异常保留诊断但不进入复核',r.steps.diagnostics.candidate_issues.length===1&&r.steps.diagnostics.isolated_relations.length===1);
+  c.entities[1].type=null;c.entities[1].type_id=null;c.entities[1].type_resolution={id:null,label:null,reason:'模型未选择主类型',raw:{id:null,label:null}};const r2=assembleIntegratedResult(c,mapping,source,context);r2.model=r.model;ok('只有缺主类型触发结果复核',r2.steps.step6.decision==='type_review'&&r2.metrics.reviews===1&&r2.steps.step6.review_items[0].entity_id==='GE2');ok('无批级默认复核码',r2.steps.step6.review_reasons.join()==='ENTITY_TYPE_REVIEW_REQUIRED');
+  renderResult(document.getElementById('currentResult'),r);ok('对比结果没有候选话题复核',!document.getElementById('currentResult').textContent.includes('候选话题 · 待复核'));ok('合法结果不出现主类型复核区',!document.getElementById('currentResult').textContent.includes('主类型待复核'));ok('校验诊断默认折叠',!!document.querySelector('#currentResult details:not([open])'));renderResult(document.getElementById('currentResult'),r2);ok('对比结果显示缺类型实体名',document.getElementById('currentResult').textContent.includes('主类型待复核')&&document.getElementById('currentResult').textContent.includes('资源乙'));
+  renderPipeline(r);ok('正常程序校验不标人审',!document.querySelector('#pipelineBar .review')&&document.getElementById('pipelineBar').textContent.includes('程序校验'));renderPipeline(r2);ok('缺类型程序步骤提示复核',!!document.querySelector('#pipelineBar .review'));gatePill(document.getElementById('currentGate'),'ready');ok('正常状态不暗示生产发布',document.getElementById('currentGate').textContent==='校验完成');
+  commitFileWorkspace([],[],[]);const f=registerArchiveSource({name:'回归示例.txt',text:source,size:source.length});r2.source.file_id=f.id;r2.source.file_revision=f.revision;addLocalPreview(r2);ok('文件解析不固定待复核状态',state.files[0].status==='已解析');ok('文件贡献不复制整批类型原因',!state.previews.find(e=>e.name==='武器甲').fileContributions[0].data.reviewReasons.includes('ENTITY_TYPE_REVIEW_REQUIRED'));ok('保存后复核只计缺类型',typeReviewItems().length===1);
+  const broken=structuredClone(r2);broken.steps.step6.hard_failures=['fixture-invalid-evidence'];let refused=false;try{addLocalPreview(broken)}catch(e){refused=true}ok('硬校验失败仍阻止写入',refused);
+  setPage('knowledge');state.selectedEntity=state.previews.find(e=>e.name==='资源乙').id;renderKnowledge();return tests;
+ });
+ for(const width of [1440,760,390]){await page.setViewportSize({width,height:1000});if(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2))throw Error('页面溢出 '+width)}
+ await page.setViewportSize({width:1440,height:1000});await page.screenshot({path:root+'/outputs/知识Wiki仅主类型复核-'+mode+'.png',fullPage:true});
+ if(errors.length||blocked.length)throw Error(JSON.stringify({errors,blocked}));report.passed=report.tests.length;report.pageErrors=errors;report.blockedWrites=blocked;report.kind='browser-regression-with-fixtures-no-model-call-no-cloud-writes';fs.writeFileSync(root+'/outputs/wiki-type-review-'+mode+'.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
+ }finally{await browser.close()}})().catch(e=>{console.error(e);process.exitCode=1});
