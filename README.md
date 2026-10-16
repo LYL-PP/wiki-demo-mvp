@@ -12,6 +12,7 @@
 | `.playwright-cli/` | 回归测试。Playwright + mock 浏览器，用 `vm.Script` 与 `page.route` 喂本地 `pipeline.js`，**不调用真实模型** |
 | `outputs/*.md` | 开发规格、产品方案、各版提示词与实测评估 |
 | `.workbuddy/memory/` | 项目决策日志（按天） |
+| `wiki-demo-mvp/游戏研发知识Wiki受控索引标签词表.xlsx` | 受控主类型词表工作簿（可直接导入应用） |
 
 ## 主线流程
 
