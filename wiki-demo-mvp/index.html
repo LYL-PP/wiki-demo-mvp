@@ -153,7 +153,7 @@ function workbookSnapshot(){if(!workbookReady||workbookRowId!==1||!savedWorkbook
 const DEFAULT_PROMPTS={
 step2:`你是服务游戏研发实际工作场景的语义话题识别器。话题是一组能够共同回答具体研发问题、支持查阅与复用的知识，不是项目目录、职能分类或实体类型。\n主要使用者可能长期只负责一个游戏项目，因此默认采用项目内有区分度的细粒度语义话题。系统仍只有一级话题，不新增目录层级。禁止仅以“王者荣耀”“巫师3”等游戏/项目/IP名称命名话题，也不要用“玩法”“英雄”“战斗系统”“新手攻略”等无具体问题的泛称兜底；产品/项目是上下文锚点与独立分面，不是话题本身。\n优先按“产品/项目或具体对象 + 机制/场景 + 核心研发问题”命名，句式不机械套用。例如：王者荣耀弓箭英雄的射程与命中反馈设计、王者荣耀新手引导的技能教学与操作负担、巫师3法印与近战衔接的战斗决策。示例只是粒度参考，只有原文支持才能输出，不得强行从玩家攻略推导开发者设计意图。\n一个话题应对应策划、程序、美术等在项目内会单独检索、讨论或复用的具体问题，有实质内容及明确适用范围。采用最小可复用的问题簇，而不是越碎越好：多个对象共同回答同一问题时放入同一话题；同一项目下解决不同问题的内容保留独立话题。不要按每个Entity、参数、段落、小节或文件名各建一个话题，也不要求至少两个实体。\n综合文档按原文中的具体问题分别形成话题，不用一个项目名或“综合攻略”覆盖全文。若内容仅提到项目/标题、没有可支持的具体问题，则进入复核或不输出话题，不编造细节凑出细话题。\n优先匹配已有话题，但必须比较具体对象、核心问题、适用范围与纳入/排除边界；只有范围真正等价才复用。已有项目级粗话题不能吞并新细话题。无合适话题时只输出 candidate_topic，不得直接创建正式话题。\n每个话题给出清晰名称、定义、范围、对象锚点、核心问题、纳入边界、排除边界和逐字证据。判断区分度：同项目策划只看名称和范围，能否知道它回答什么、何时使用、与其他话题有何不同；不能时继续细化，证据不足时复核。`,
 step3:`你是在话题语境中工作的 Entity 候选抽取器。候选必须同时满足：可明确指代、有实质证据、有具体复用价值。\n孤立参数、纯标题、泛称和整段文档不得建实体。分类不确定但有价值时进入 review。\n每个候选必须输出规范名称、简明定义、别名和可回跳的逐字证据。`,
-step4:`你是 Entity 身份归一与同名消歧判定器。先区分来源中的 Mention 与知识库中的稳定 Entity，只允许 reuse_existing、create_new、review。\n名称和别名索引是一对多的；同名、向量相似或共同出现都不能单独授权合并。必须比较本体类型、现实或虚构世界、产品/IP 范围、关键属性、版本和关系邻域。\n若身份锚点冲突，应创建新的同名 Entity 候选；若上下文不足，应进入 review。实体出现在多个话题时引用同一 ID，不复制实体；人工锁定字段不得覆盖。`,
+step4:`你是 Entity 身份锚点与同名消歧标注器。跨段与跨来源的同一身份复用由程序按稳定 ID 与身份锚点比对完成，不由你裁决；你只负责让每个候选可被比对：输出 disambiguator（同名区分说明）与完整 anchors（本体类型、现实或虚构语境、产品/IP 范围、版本、关键身份属性）。\n名称和别名索引是一对多的；同名、位置相邻、共同出现都不能单独授权合并。锚点冲突时保留为同名不同候选，不做归并；上下文不足时给该候选加 decision:"review" 并说明理由，程序会隔离等待人工确认，不会静默合并或丢弃。\n实体出现在多个话题时引用同一 ID，不复制实体。不要输出 reuse_existing/create_new，不要引用或编造已有稳定 ID。`,
 step5:`你是实体索引与受控关系标注器。主类型只选当前云端已保存active词表中最具体的一个类型；不确定填null复核，不使用“对象”“其他”。产品、专业、版本及candidate_tags仅作建议。
 Relation只能选择请求中冻结的active关系表：输出relation_type_id及对应标准谓词，不自由新建正式关系；按定义、边界、源→目标方向、强弱和端点类型选择，允许精确同义词归一，不能强行套入近似关系。未命中或不确定时输出review中的candidate_relation，保留原建议与证据。
 同类是不同对象在原文明确归为同一具体类别，仅作weak，不能因Tag相同自动生成；包含为整体→组成部分，属于为组成部分/成员→整体/组织，不混用分类is-a或空间位于；同源须原文明确两者共同来源，不能因同IP、同文档、名称相似认定；依赖是必要前提，不等于一般使用。包含/属于是逆向定义，对称关系无业务方向，不据此新增逆向证据或推理传递关系。
@@ -1457,8 +1457,8 @@ window.wikiRunTiming=(()=>{
 const timingOriginalInit=init;
 init=function(){wikiFailureDiagnostics.install();wikiRunTiming.install();const result=timingOriginalInit.apply(this,arguments);initComparisonUI();return result};
 </script>
-<script src='./semantic-tags.js?v=20261016h'></script>
-<script src="./pipeline.js?v=20261016h"></script>
-<script src="./file-manager.js?v=20261016h"></script>
-<script src="./prompt-history.js?v=20261016h"></script>
+<script src='./semantic-tags.js?v=20261018a'></script>
+<script src="./pipeline.js?v=20261018a"></script>
+<script src="./file-manager.js?v=20261018a"></script>
+<script src="./prompt-history.js?v=20261018a"></script>
 <script>wikiPromptHistory.init();init();</script></body></html>

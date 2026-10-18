@@ -185,6 +185,8 @@
     const s=controller.status().snapshot;if(uiReady&&same(snapshot(),s)){refreshStatus();return}
     // 显式恢复/载入后的绑定必须指向新快照，避免旧共享框在下一次 capture 时回写旧值。
     if(sharedPromptBinding&&!sharedPromptBinding.dirty)sharedPromptBinding=null;
+    // 云端快照可能仍是旧的已知默认值；回填后再跑一次升级，否则提示词修复生效不到线上。
+    if(typeof wikiUpgradePromptDefaults==='function'){wikiUpgradePromptDefaults(s.baseline,'基线');wikiUpgradePromptDefaults(s.current,'新版')}
     applying=true;try{state.baselinePrompts=clone(s.baseline);state.prompts=clone(s.current);try{save(STORE+'baseline',s.baseline);save(STORE+'prompts',s.current)}catch(e){toast('兼容缓存保存失败；历史草稿另存，建议导出备份。')}renderPromptEditor();markResultsStale()}finally{applying=false}
   }
   function record(kind='edit'){if(applying)return;controller.changed(snapshot(),kind);markResultsStale();refreshStatus()}

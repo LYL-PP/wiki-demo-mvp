@@ -16,7 +16,9 @@ const digest=data=>crypto.createHash('sha256').update(JSON.stringify(data)).dige
    ok('默认STEP2明确禁止纯项目名',defaults.step2.includes('禁止仅以“王者荣耀”')&&!defaults.step2.includes('既可暂时使用'));
    ok('以项目内具体研发问题形成最小可复用问题簇',defaults.step2.includes('最小可复用的问题簇')&&defaults.step2.includes('不要求至少两个实体'));
    ok('粒度基于证据且不推断开发者设计意图',defaults.step2.includes('不得强行从玩家攻略推导开发者设计意图')&&defaults.step2.includes('证据不足时复核'));
-   ok('整合不合回项目级大话题',defaults.integration.includes('禁止将细话题合回')&&defaults.integration.includes('同一项目中的不同研发问题保留独立'));
+   ok('整合不合回项目级大话题',defaults.integration.includes('禁止把细话题合回')&&defaults.integration.includes('同一项目中的不同研发问题保留独立'));
+   ok('整合提示词领域无关',!/王者荣耀|巫师3|射程与命中反馈|法印|综合攻略/.test(defaults.integration),defaults.integration.slice(0,120));
+   ok('整合提示词说明归并字段用法',defaults.integration.includes('scope_equivalent')&&defaults.integration.includes('boundary_basis')&&defaults.integration.includes('existing_topic_id'));
    const input=await page.evaluate(()=>integrationModelInput({...state.prompts,step2:'自定义具体问题测试标记'},{topics:[],entities:[]},{historySnapshot:{topics:[]},documentContext:{},snapshot:{workbook:{sheets:[]}}}));
    ok('全局整合读取本次STEP2而非独立旧粒度',input.includes('自定义具体问题测试标记'));
    for(const [label,step2] of [['早期默认',old.step2],['分段默认',old.step2Chunk],['完整旧默认',old.step2Latest]]){
@@ -44,7 +46,7 @@ const digest=data=>crypto.createHash('sha256').update(JSON.stringify(data)).dige
    const report={stage:mode,revision:info.revision,types:info.types,fingerprint:digest(info.workbook),modelCount:info.modelCount,errors,blocked};
    if(mode==='after'){
     const before=JSON.parse(fs.readFileSync(root+'/outputs/wiki-topic-release-before.json','utf8'));report.workbookUnchanged=before.fingerprint===report.fingerprint&&before.revision===report.revision;assert(report.workbookUnchanged);
-    assert(info.defaults.step2.includes('禁止仅以“王者荣耀”'));assert(info.defaults.integration.includes('禁止将细话题合回'));report.fineDefaultsLoaded=true;
+    assert(info.defaults.step2.includes('禁止仅以“王者荣耀”'));assert(info.defaults.integration.includes('禁止把细话题合回'));assert(info.defaults.integration.includes('existing_topic_id'));report.fineDefaultsLoaded=true;
     await page.setInputFiles('#fileInput',{name:'话题默认规则验收.txt',mimeType:'text/plain',buffer:Buffer.from('仅检查页面和文件管理，不请求模型。')});await page.waitForFunction(()=>!fileReading&&state.files.length===1);report.runEnabled=await page.evaluate(()=>!document.getElementById('runBtn').disabled);assert(report.runEnabled);
     await page.click('[data-page="lab"]');await page.evaluate(()=>{state.promptKey='step2';renderPromptEditor()});report.step2Editor=await page.locator('#promptEditor').inputValue();assert(report.step2Editor===info.defaults.step2);
     await page.evaluate(()=>{state.promptKey='integration';renderPromptEditor()});assert((await page.locator('#promptEditor').inputValue())===info.defaults.integration);
