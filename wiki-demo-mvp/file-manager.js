@@ -76,6 +76,7 @@ function rebuildFileKnowledge(topics,entities,workbook=savedWorkbook){
     base.suggestedFacets=Object.fromEntries(['product','discipline','version'].map(k=>[k,[...new Set(data.flatMap(d=>arr(d.suggestedFacets?.[k])))]]));
     base.semanticFacetDetails=wikiUnique(data.flatMap(d=>arr(d.semanticFacetDetails)));
     base.semanticFacetsRecognized=data.every(d=>d.semanticFacetsRecognized===true);
+    base.images=window.wikiEntityImages?wikiEntityImages.mergeImages(data.map(d=>arr(d.images))):[];
     const relations=new Map();for(const d of data)for(const r of arr(d.relations)){const key=JSON.stringify([r.typeId||r.type,r.targetId,r.strength]);if(relations.has(key)){const prior=relations.get(key);prior.evidences=wikiUnique([...arr(prior.evidences),...arr(r.evidences)]);prior.sources=wikiUnique([...arr(prior.sources),...arr(r.sources)])}else relations.set(key,structuredClone(r))}base.relations=[...relations.values()];return base;
   });
   const entityIds=new Set(entities.map(e=>e.id));for(const e of entities){e.relations=e.relations.filter(r=>!r.targetId||entityIds.has(r.targetId));for(const c of arr(e.fileContributions))c.data.relations=arr(c.data.relations).filter(r=>!r.targetId||entityIds.has(r.targetId))}
@@ -96,13 +97,13 @@ function invalidateFileSession(id){
 }
 function deleteArchiveFile(id,confirmed=false){
   if(!fileMutationAllowed())throw new Error('正在读取文件、词表或运行模型，请完成后再编辑删除。');const plan=planFileRemoval(id);if(!confirmed&&!window.confirm(fileImpactMessage(plan,'删除文件并撤销其知识')))return false;
-  commitFileWorkspace(state.files.filter(f=>f.id!==id),plan.topics,plan.entities);invalidateFileSession(id);toast('文件及其独有知识已删除；共享内容保留其他来源');return true;
+  commitFileWorkspace(state.files.filter(f=>f.id!==id),plan.topics,plan.entities);invalidateFileSession(id);window.wikiEntityImages?.deleteFileImages(id);toast('文件及其独有知识已删除；共享内容保留其他来源');return true;
 }
 function updateArchiveFile(id,name,text,size,confirmed=false){
   if(!fileMutationAllowed())throw new Error('正在读取文件、词表或运行模型，请完成后再编辑删除。');name=String(name||'').trim();if(!name||name.length>240)throw new Error('名称需为 1–240 字。');
   const old=state.files.find(f=>f.id===id);if(!old)throw new Error('文件已不存在。');if(text!==null&&(typeof text!=='string'||!text.trim()||text.length>30000||text.includes('\u0000')))throw new Error('正文需为非空文本，不超过 30000 字，不能包含空字符。');
   const changed=text!==old.text,files=structuredClone(state.files),file=files.find(f=>f.id===id);let topics=structuredClone(state.previewTopics),entities=structuredClone(state.previews);
-  if(changed){const plan=planFileRemoval(id);if(!confirmed&&!window.confirm(fileImpactMessage(plan,'修改正文并撤销旧版本知识，保存后需重新解析')))return false;topics=plan.topics;entities=plan.entities;file.revision++;file.status='待解析';file.legacy=false;file.lastRun=null}
+  if(changed){const plan=planFileRemoval(id);if(!confirmed&&!window.confirm(fileImpactMessage(plan,'修改正文并撤销旧版本知识，保存后需重新解析')))return false;topics=plan.topics;entities=plan.entities;file.revision++;file.status='待解析';file.legacy=false;file.lastRun=null;window.wikiEntityImages?.deleteFileImages(id)}
   file.name=name;file.text=text;file.size=size??old.size;file.updatedAt=new Date().toISOString();
   for(const t of topics)for(const c of arr(t.fileContributions).filter(c=>c.fileId===id))c.data.evidences=arr(c.data.evidences).map(q=>({...q,file:name}));
   for(const e of entities)for(const c of arr(e.fileContributions).filter(c=>c.fileId===id)){
@@ -120,9 +121,14 @@ function registerArchiveSource(source){
   if(!file){file={...source,id:'F-'+crypto.randomUUID(),originalName:source.name,revision:1,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),status:'待解析'};commitFileWorkspace([...state.files,file],state.previewTopics,state.previews)}
   return structuredClone(file);
 }
+function prepareSourceImages(source,file){
+  const images=window.wikiEntityImages;if(!images||!source?.id)return;
+  images.attach(source,file);
+  images.prepareSource(source).then(records=>{if(records&&records.length)renderFiles()}).catch(()=>{});
+}
 async function handleSourceFile(file){
   if(!fileMutationAllowed()||!file)return;const oldSource=state.source,revision=++fileRevision;fileReading=true;renderFiles();updateRunReadiness();setSourceStatus('正在读取并提取 '+file.name+' …');
-  try{const source=await readSourceFile(file);if(revision!==fileRevision)return;state.source=registerArchiveSource(source);resetSourceResults();setPage('lab');renderSourceUI()}
+  try{const source=await readSourceFile(file);if(revision!==fileRevision)return;state.source=registerArchiveSource(source);resetSourceResults();setPage('lab');renderSourceUI();prepareSourceImages(state.source,file)}
   catch(error){state.source=oldSource;setSourceStatus(error.message||'文件读取失败；旧文件仍保留。',true);toast(error.message||'文件保存失败')}
   finally{if(revision===fileRevision){fileReading=false;renderFiles();renderSourceUI()}}
 }
@@ -145,16 +151,18 @@ function stageWikiFileResult(result,newTopics,newEntities,topicMap,entityMap){
     if(!marked.tags.entity_type)data.typeIssue={reason:(marked.tags.typeIssue?entityTypeIssueText({typeIssue:marked.tags.typeIssue}):resolution.reason)||'主类型缺失：未选择有效的受控主类型。',raw:structuredClone(marked.tags.typeIssue?.raw??resolution.raw??null),source:{fileId:id,file:file.name,revision:file.revision}};else delete data.typeIssue;
     for(const key of ['facets','facetDetails','semantic_facets','candidate_tags'])delete data[key];
     data.reviewReasons=[...(!marked.tags.entity_type?['ENTITY_TYPE_REVIEW_REQUIRED']:[]),...(n.decision==='review'?['ENTITY_IDENTITY_REVIEW']:[])];
-    data.relations=marked.relations.map(r=>({type:r.predicate,typeId:r.relation_type_id,direction:r.direction,vocabRevision:result.workbook_revision,targetId:entityMap.get(r.target_mention_local_id),targetName:r.target_name,strength:r.strength,evidence:r.evidence.exact_quote,fileId:id,evidences:r.evidences.map(q=>({...q,fileId:id,file:file.name})),sources:r.evidences.map(q=>({fileId:id,file:file.name,quote:q.exact_quote}))}));entity.fileContributions=[...arr(entity.fileContributions),{fileId:id,revision:file.revision,data}];
+    data.relations=marked.relations.map(r=>({type:r.predicate,typeId:r.relation_type_id,direction:r.direction,vocabRevision:result.workbook_revision,targetId:entityMap.get(r.target_mention_local_id),targetName:r.target_name,strength:r.strength,evidence:r.evidence.exact_quote,fileId:id,evidences:r.evidences.map(q=>({...q,fileId:id,file:file.name})),sources:r.evidences.map(q=>({fileId:id,file:file.name,quote:q.exact_quote}))}));
+    data.images=window.wikiEntityImages?wikiEntityImages.matchedImagesFor(result,m.mention_local_id):[];entity.fileContributions=[...arr(entity.fileContributions),{fileId:id,revision:file.revision,data}];
   }
   for(const entity of newEntities){const own=arr(entity.fileContributions).filter(c=>c.fileId===id&&c.revision===file.revision);if(own.length>1){const data=mergeSourceContributionData(own.map(c=>c.data));if(data)entity.fileContributions=[...entity.fileContributions.filter(c=>c.fileId!==id),{fileId:id,revision:file.revision,data}]}}
   const rebuilt=rebuildFileKnowledge(newTopics,newEntities),files=structuredClone(state.files),f=files.find(f=>f.id===id);f.status='已解析';f.lastRun=fileRunSnapshot(result);commitFileWorkspace(files,rebuilt.topics,rebuilt.entities);renderKnowledge();renderFiles();return true;
 }
 function fileCounts(id){return {topics:state.previewTopics.filter(t=>fileContributionIds(t).includes(id)).length,entities:state.previews.filter(e=>fileContributionIds(e).includes(id)).length}}
+function imageCountOf(file){return window.wikiEntityImages?wikiEntityImages.countFor(file.id,file.revision)||0:0}
 function renderFiles(){
   if(!document.getElementById('fileList'))return;const files=arr(state.files),query=document.getElementById('archiveSearch').value.trim().toLowerCase(),shown=files.filter(f=>f.name.toLowerCase().includes(query)),busy=!fileMutationAllowed();
   document.getElementById('fileArchiveCount').textContent=files.length;document.getElementById('fileListSummary').textContent=`共 ${files.length} 个文件 · 显示 ${shown.length} 个`;document.getElementById('archiveAddBtn').disabled=busy;
-  document.getElementById('fileList').innerHTML=shown.length?shown.map(f=>{const c=fileCounts(f.id);return `<article class="file-record" data-file-id="${escapeHtml(f.id)}"><div><h3>${escapeHtml(f.name)} ${state.source?.id===f.id?'<span class="pill blue">当前输入</span>':''}</h3><p class="small">${escapeHtml(f.status==='已解析 · 待复核'?'已解析':f.status)} · v${f.revision} · ${f.text===null?'历史正文未保存':f.text.length+' 字'} · ${(f.size/1024).toFixed(1)} KB</p><p class="small">${c.topics} 个关联话题 · ${c.entities} 个关联实体 · ${escapeHtml(new Date(f.updatedAt).toLocaleString('zh-CN'))}</p>${f.legacy?'<p class="small">历史来源按原文件名恢复；同名历史文件无法可靠区分，来源归属待核对。</p>':''}</div><div class="row"><button class="btn primary" data-file-action="select" ${busy||!f.text?'disabled':''}>用于测试</button><button class="btn" data-file-action="edit" ${busy?'disabled':''}>编辑</button><button class="btn danger" data-file-action="delete" ${busy?'disabled':''}>删除</button></div></article>`}).join(''):'<div class="empty">'+(files.length?'没有匹配的文件':'尚未导入文件；添加文件后会在这里持续保留')+'</div>';
+  document.getElementById('fileList').innerHTML=shown.length?shown.map(f=>{const c=fileCounts(f.id);return `<article class="file-record" data-file-id="${escapeHtml(f.id)}"><div><h3>${escapeHtml(f.name)} ${state.source?.id===f.id?'<span class="pill blue">当前输入</span>':''}</h3><p class="small">${escapeHtml(f.status==='已解析 · 待复核'?'已解析':f.status)} · v${f.revision} · ${f.text===null?'历史正文未保存':f.text.length+' 字'} · ${(f.size/1024).toFixed(1)} KB</p><p class="small">${c.topics} 个关联话题 · ${c.entities} 个关联实体${imageCountOf(f)?' · '+imageCountOf(f)+' 张本地图片':''} · ${escapeHtml(new Date(f.updatedAt).toLocaleString('zh-CN'))}</p>${f.legacy?'<p class="small">历史来源按原文件名恢复；同名历史文件无法可靠区分，来源归属待核对。</p>':''}</div><div class="row"><button class="btn primary" data-file-action="select" ${busy||!f.text?'disabled':''}>用于测试</button><button class="btn" data-file-action="edit" ${busy?'disabled':''}>编辑</button><button class="btn danger" data-file-action="delete" ${busy?'disabled':''}>删除</button></div></article>`}).join(''):'<div class="empty">'+(files.length?'没有匹配的文件':'尚未导入文件；添加文件后会在这里持续保留')+'</div>';
   for(const button of document.querySelectorAll('[data-file-action]'))button.onclick=()=>{const id=button.closest('[data-file-id]').dataset.fileId;try{if(button.dataset.fileAction==='select')selectArchiveFile(id);else if(button.dataset.fileAction==='edit')openFileEditor(id);else deleteArchiveFile(id)}catch(e){toast(e.message)}};
   for(const id of ['saveFileEditBtn','replaceArchiveFileBtn'])document.getElementById(id).disabled=busy;
 }

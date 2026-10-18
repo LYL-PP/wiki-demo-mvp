@@ -7,7 +7,7 @@ const vm=require('node:vm');
 const {chromium}=require('C:/Users/louisxzlu/.workbuddy/binaries/node/workspace/node_modules/playwright');
 const root='C:/Users/louisxzlu/WorkBuddy/2026-09-18-16-22-25';
 const app=path.join(root,'wiki-demo-mvp');
-const names=['index.html','semantic-tags.js','pipeline.js','file-manager.js','prompt-history.js'];
+const names=['index.html','semantic-tags.js','pipeline.js','entity-images.js','file-manager.js','prompt-history.js'];
 const sources=Object.fromEntries(names.map(name=>[name,fs.readFileSync(path.join(app,name),'utf8')]));
 const hashes=()=>Object.fromEntries(names.map(name=>[name,crypto.createHash('sha256').update(fs.readFileSync(path.join(app,name))).digest('hex')]));
 const beforeHashes=hashes();

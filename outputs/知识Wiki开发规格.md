@@ -599,6 +599,23 @@ stageTopics.map(t => ({id: t.local_id || t.id, name: t.name, scope: t.scope,
 - 阶段清单预置（未执行也显示"未执行"）：`source / input / extraction_request / json_parse / topic_validation / entity_input / entity_validation / chunk_validation（单次口径，兼容保留）/ candidate_assembly / integration_input / integration_request / assembly / display / baseline_clone`。
 - 口径红线：**阶段存在嵌套与并发，不可相加为总耗时**；接口耗时含网络与模型服务，不能拆分；相同 Prompt 复用基线时只记 `baseline_clone`，不复制基线计时；缓存只统计本轮命中。
 
+### 11.3.1 实体配图（`entity-images.js`）· 独立旁路阶段 ⚠️ 新增
+
+**定位**：不参与话题 / 实体 / Tag / Relation 的抽取与校验，不改写任何既有结果字段；只在"解析完成 → 写入知识浏览之前"运行一次。`runCurrent` 中单点接入，整体 `try/catch`，**任何失败都降级为"无配图"，不阻断既有流程**。
+
+| 环节     | 规则                                                                                                                     |
+| ------ | ---------------------------------------------------------------------------------------------------------------------- |
+| 抽取时机   | 添加 PDF / DOCX 时后台预抽取到浏览器本地图片库（IndexedDB `wiki_entity_images`），键为 `fileId:revision:index`；运行时尚未落库且浏览器仍持有原文件时按需补抽 |
+| 抽取实现   | PDF 走 pdf.js 操作符列表（`paintImageXObject` / `paintJpegXObject`）＋同页邻近文字；DOCX 走 JSZip 解包 `word/media/*` ＋ `document.xml` 中的 `a:blip` 顺序，取所在段与后续段文字做图注 |
+| 过滤     | 短边 < 80 px 的装饰图跳过；单次最多处理张数可配置（默认 24，上限 60）；仅 PDF / DOCX，TXT/MD/CSV/JSON 无图                                                   |
+| 程序定位   | 图注/邻近文字/章节标题归一化后在正文里定位偏移；打分：**图文邻近文字直接指名实体 +6** → **与实体证据同一段原文（±300 字） +4** → **同一章节 +2**；0 分不进入候选                |
+| 模型复核   | **一图一次请求，只带 ≤5 个候选**（`entity_id` 逐字来自候选清单）；模型**读图片内容**判断，返回 `{entity_id, match, confidence, reason}`；模型返回清单外 ID 一律丢弃并写诊断 |
+| 综合判定   | 强规则（≥4 分）＋模型确认 → `rule+model`；弱规则（1–3 分）＋模型 high/medium → `model`；模型否决 → 不采纳并写 `IMAGE_MODEL_REJECTED`；模型不可用 → 强规则降级采纳 `rule`，弱规则不采纳 |
+| 存储与展示  | 原图与 96 px 缩略图只存当前浏览器本地图片库，**不上传**；词条详情"来源配图"区块异步加载缩略图，点击看原图；配图是阅读辅助，**不是证据、不是关系**，不参与复核队列                           |
+| 级联     | 文件版本变化或删除文件 → 清除该文件全部本地图片；多来源实体按 imageId 去重、保留高分判定                                                                        |
+
+诊断码：`IMAGE_STAGE_SKIPPED / DISABLED / STOPPED / SOURCE_UNBOUND / SOURCE_UNAVAILABLE / NO_IMAGES / NO_ENTITIES / STORE_READ_FAILED / EXTRACT_FAILED / MODEL_NOT_CONFIGURED / MODEL_FAILED / MODEL_UNPARSEABLE / MODEL_UNKNOWN_ID / MODEL_REJECTED / WEAK_MATCH`。
+
 ### 11.4 两版对比导出（对比页「导出两版对比 Excel」/「导出对比 JSON」）· A 类
 
 导出**本轮两版真实运行结果**的横向对比，供人工比对与问题定位。无结果时两个按钮置灰。

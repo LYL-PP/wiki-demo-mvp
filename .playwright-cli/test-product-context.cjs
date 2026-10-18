@@ -235,7 +235,7 @@ async function main() {
   const nativeAssert = require('node:assert/strict');
   const root = path.resolve(__dirname, '..'), app = path.join(root, 'wiki-demo-mvp'), outputs = path.join(root, 'outputs');
   const origin = 'http://127.0.0.1:19434';
-  const names = ['index.html', 'semantic-tags.js', 'pipeline.js', 'file-manager.js', 'prompt-history.js'];
+  const names = ['index.html', 'semantic-tags.js', 'pipeline.js', 'entity-images.js', 'file-manager.js', 'prompt-history.js'];
   const reportPath = path.join(outputs, 'wiki-product-context-tests-recheck.json');
   const screenshotPath = path.join(outputs, '知识Wiki产品归属修复-本地.png');
   const xlsxPath = path.join(outputs, 'wiki-product-context-fixture.xlsx');

@@ -292,7 +292,7 @@
         stable(typeInputs(entry)) !== stable(typeInputs(first)))) return null;
     const unique = values => [...new Map(values.map(value => [stable(value), value])).values()];
     const semantic = entries.map(semanticFacetStorage), data = clearDerivedSemanticStorage(first);
-    for (const key of ['sources', 'topics', 'aliases', 'facts', 'reviewReasons', 'relations']) data[key] = unique(entries.flatMap(entry => list(entry[key])));
+    for (const key of ['sources', 'topics', 'aliases', 'facts', 'reviewReasons', 'relations', 'images']) data[key] = unique(entries.flatMap(entry => list(entry[key])));
     data.summary = unique(entries.map(entry => entry.summary).filter(Boolean)).join('；');
     data.identityDecision = entries.some(entry => entry.identityDecision === 'review') ? 'review' : first.identityDecision;
     data.candidateTags = unique(semantic.flatMap(entry => entry.candidateTags));

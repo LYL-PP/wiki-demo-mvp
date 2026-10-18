@@ -20,7 +20,7 @@ const html = fs.readFileSync(path.join(root, 'wiki-demo-mvp/index.html'), 'utf8'
       const p = new URL(r.request().url()).pathname.replace(/^\//, '');
       if (p === 'semantic-tags.js') return r.fulfill({contentType: 'application/javascript', body: fs.readFileSync(path.join(root, 'wiki-demo-mvp/semantic-tags.js'), 'utf8')});
       if (p === 'file-manager.js') return r.fulfill({contentType: 'application/javascript', body: fs.readFileSync(path.join(root, 'wiki-demo-mvp/file-manager.js'), 'utf8')});
-      if (p === 'pipeline.js') return r.fulfill({contentType: 'application/javascript', body: fs.readFileSync(path.join(root, 'wiki-demo-mvp/pipeline.js'), 'utf8')});
+      if (p === 'pipeline.js' || p === 'entity-images.js') return r.fulfill({contentType: 'application/javascript', body: fs.readFileSync(path.join(root, 'wiki-demo-mvp/' + p), 'utf8')});
       if (p === 'prompt-history.js') return r.fulfill({contentType: 'application/javascript', body: ''});
       return r.fulfill({contentType: 'text/html', body: html.replace('<script>wikiPromptHistory.init();init();</script>', '<script>initCloud=async()=>{};init();</script>')});
     });
