@@ -24,6 +24,7 @@ const SCENARIOS = [
   'inferred 产品与版本仍拒绝',
   '主话题游戏锚点有 explicit 版本也不得继承',
   '仅主话题，不从关联话题广播',
+  '跨主话题同来源仍可互证产品',
   '多产品身份范围拒绝',
   '跨产品主话题拒绝',
   '同来源已确认产品冲突拒绝',
@@ -431,6 +432,19 @@ async function main() {
     })));
     await test('多产品身份范围拒绝', async () => expectReject(await evaluate(() => productFixtures.project(productFixtures.make({ scope: '燕云十六声、人工游戏乙' })))));
     await test('跨产品主话题拒绝', async () => expectReject(await evaluate(() => productFixtures.project(productFixtures.make({ topicName: '跨产品道具对比', objectAnchor: '跨游戏比较' })))));
+    await test('跨主话题同来源仍可互证产品', async () => {
+      // 攻略里产品名常只出现在标题与个别词条，"游戏本体"实体常挂在另一个主话题下；
+      // 按主话题分组会让资源/机制类实体永远拿不到确认角色。确认角色应覆盖同来源全部话题。
+      const r = await evaluate(() => {
+        const f = productFixtures, x = f.make({ scope: null, anchor: true });
+        const gameTopicId = 'PC-T-GAME', anchor = f.data(x.anchor);
+        anchor.primaryTopic = gameTopicId; anchor.topics = [gameTopicId];
+        x.topics.push(f.bindTopic({ id: gameTopicId, name: '人工游戏本体的独立话题', object_anchor: x.product,
+          definition: '游戏本体话题', scope: '游戏本体', core_question: '这是一款什么游戏',
+          includes: ['游戏本体'], excludes: [], evidences: [] }, x.files[0]));
+        return f.project(x);
+      }); expectContext(r);
+    });
     await test('同来源已确认产品冲突拒绝', async () => expectReject(await evaluate(() => {
       const f = productFixtures, x = f.make({ anchor: true });
       const quote = '《人工游戏乙》提供角色成长玩法。'; x.files[0].text += '\n' + quote;

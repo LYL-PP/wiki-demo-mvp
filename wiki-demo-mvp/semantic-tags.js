@@ -553,14 +553,16 @@
       }
       if (!index.peers) {
         index.peers = new Map();
+        // 确认角色按"同来源"收集：攻略正文里产品名通常只出现在标题和个别词条，游戏本体实体往往挂在
+        // 另一个主话题下；按主话题分组会让资源/机制类实体永远拿不到确认角色（PRODUCT_CONTEXT_INSUFFICIENT）。
         for (const anchor of list(entities)) for (const peer of recordsFor(anchor)) {
           if (peer.legacy) continue;
-          const key = JSON.stringify([sourceKey(peer.source), primaryFor(peer.data)]);
+          const key = sourceKey(peer.source);
           if (!index.peers.has(key)) index.peers.set(key, []);
           index.peers.get(key).push({anchor, peer});
         }
       }
-      const confirmationCache = index.confirmations ??= new Map(), confirmationKey = JSON.stringify([sourceKey(source), primary]);
+      const confirmationCache = index.confirmations ??= new Map(), confirmationKey = sourceKey(source);
       if (!confirmationCache.has(confirmationKey)) {
         const candidateRoles = [], products = new Set();
         for (const {anchor, peer} of index.peers.get(confirmationKey) || []) {
@@ -590,9 +592,11 @@
         }
         confirmationCache.set(confirmationKey, {candidateRoles, products});
       }
-      const confirmationsForTopic = confirmationCache.get(confirmationKey);
-      for (const name of confirmationsForTopic.products) confirmedProducts.add(name);
-      for (const candidate of confirmationsForTopic.candidateRoles) addRole(candidate.name, candidate.proof, candidate.role);
+      // 同伴改为按来源收集，但冲突判定保持原语义：同来源出现多个已确认产品仍判冲突；
+      // 只有与主话题边界一致的候选才真正产出角色（addRole 内部 matchesTopic 过滤）。
+      const confirmationsForSource = confirmationCache.get(confirmationKey);
+      for (const name of confirmationsForSource.products) confirmedProducts.add(name);
+      for (const candidate of confirmationsForSource.candidateRoles) addRole(candidate.name, candidate.proof, candidate.role);
       if (confirmedProducts.size > 1 || product && [...confirmedProducts].some(value => value !== product)) {
         report('PRODUCT_CONTEXT_CONFIRMED_CONFLICT', '同来源同主话题已确认的产品角色有多值，或与当前来源身份范围冲突，未补全产品上下文', source, primary);
         continue;
