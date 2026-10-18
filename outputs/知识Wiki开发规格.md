@@ -1,6 +1,6 @@
 # 游戏研发知识 Wiki · 开发规格文档
 
-> **版本**：v1.6 ｜ **日期**：2026-10-18 ｜ **依据**：`wiki-demo-mvp/` 源码（线上 `?v=20261018a`）  
+> **版本**：v1.7 ｜ **日期**：2026-10-19 ｜ **依据**：`wiki-demo-mvp/` 源码（线上 `?v=20261018f`）  
 > **线上地址**：<https://wiki-mvp-lab.app-tencent.workbuddy.host/>  
 > **适用对象**：接手本项目的开发、测试。本文只写**必须遵守的契约与判定规则**，不写设计讨论。
 
@@ -18,6 +18,7 @@
 | 身份    | 一次提及（Mention）≠ 稳定身份（Entity），分开存储              |
 | 抽取流程  | 源文本先清站点噪声 → 按标题/章节结构化分片 → **两阶段请求**（先话题，后按已确认话题抽实体） |
 | 漏召回防线 | 模型须回 `coverage` 章节覆盖回执；程序比对源章节，缺章写诊断，**不丢候选** |
+| 实体配图  | **独立旁路阶段**：解析完成 → 写入知识浏览**之前**跑一次；规则定位 + 模型读图复核；失败一律降级为无配图，不阻断主流程（§11.3.1） |
 | 模型职责  | 语义判断、结构化建议                                    |
 | 程序职责  | 解析、稳定 ID、证据/词表/外键校验、权限、幂等写库、发布门控              |
 | 红线    | **模型不得直接创建正式话题、Tag 或写库**；任何模型输出都必须过程序校验才落库   |
@@ -29,6 +30,7 @@
 3. 新结构分面校验失败**一律丢弃**，不许降级成旧值。
 4. 已存在的受控 ID **不可删除、不可改义**，停用用 `deprecated`。
 5. 第二阶段（实体）输入必须是**精简输入**，不能拿单次完整输入再追加话题清单——会触发首字节超时。
+6. 实体配图是**阅读辅助**，不是证据、不是关系；配图阶段任何失败都只能降级为"无配图"，不得影响解析结果入库。
 
 ---
 
@@ -70,15 +72,18 @@
           └ relations（受控 RT-*）
   → Topic（一级语义话题，PT-*）              pipeline.js wikiTopicCompatible 归并
   → 章节覆盖率自检（只写诊断，不丢候选）         processSource 末段
+  → [独立旁路] 实体配图：抽取内嵌图 → 规则定位 → 模型读图复核 → 综合判定   entity-images.js
+  → 写入知识浏览（本地预览）与文件档案         index.html addLocalPreview / file-manager.js
 ```
 
-| 文件                  | 职责                                        |
-| ------------------- | ----------------------------------------- |
-| `index.html`        | UI、浏览/筛选/详情、Excel 导出、两版对比导出、运行计时、运行门禁、词表编辑 |
-| `pipeline.js`       | STEP 1/6、噪声清洗与分段、两阶段候选校验、全文整合、身份归并、入库    |
-| `semantic-tags.js`  | 主类型解析、分面抽取、已存分面回读、产品上下文投影      |
-| `file-manager.js`   | 文件档案、来源贡献、撤回、事务、历史迁移           |
-| `prompt-history.js` | 共享提示词版本（追加式）                   |
+| 文件                   | 职责                                        |
+| -------------------- | ----------------------------------------- |
+| `index.html`         | UI、浏览/筛选/详情、Excel 导出、两版对比导出、运行计时、运行门禁、词表编辑 |
+| `pipeline.js`        | STEP 1/6、噪声清洗与分段、两阶段候选校验、全文整合、身份归并、入库    |
+| `semantic-tags.js`   | 主类型解析、分面抽取、已存分面回读、产品上下文投影      |
+| `file-manager.js`    | 文件档案、来源贡献、撤回、事务、历史迁移、配图随来源级联清除  |
+| `entity-images.js`   | **实体配图旁路**：内嵌图抽取、本地图片库、规则定位、模型读图复核、综合判定（不参与抽取与校验） |
+| `prompt-history.js`  | 共享提示词版本（追加式）                   |
 
 分层红线：
 
@@ -86,6 +91,7 @@
 2. 产品/项目**不是话题本身**，是上下文锚点 + 独立分面。
 3. 系统**只有一级话题**，不建目录层级。
 4. Mention ≠ Entity：一次提及 vs 稳定身份，分开存储。
+5. 配图只在**写入知识浏览之前**由旁路阶段挂到实体上，不回流到抽取、校验、归并或导出判定。
 
 ---
 
@@ -119,6 +125,7 @@
 | `facts[] / aliases[] / relations[]` | 事实、别名、关系                                                  |
 | `reviewReasons[] / typeIssue`       | 复核原因                                                      |
 | `fileContributions[]`               | 同 3.1                                                     |
+| `images[]`（旁路产物）                    | `{imageId, name, basis, score, reasons, note, page, caption, width, height}`；**阅读辅助**，不是证据/关系，不进复核队列、不参与导出判定（§11.3.1） |
 
 ### 3.3 Evidence（证据）· A 类硬门禁
 
@@ -558,9 +565,9 @@ stageTopics.map(t => ({id: t.local_id || t.id, name: t.name, scope: t.scope,
 
 | 操作   | 行为                                                                    |
 | ---- | --------------------------------------------------------------------- |
-| 删除文件 | `planFileRemoval()` 算影响面并二次确认 → 独有话题/实体删除，共享项仅撤销该来源贡献 → 事务提交 → 清空候选缓存 |
-| 修改正文 | `revision++`、状态置「待解析」、撤销旧版本贡献，**须重新解析**                               |
-| 仅改名  | 保留知识，只改显示名                                                            |
+| 删除文件 | `planFileRemoval()` 算影响面并二次确认 → 独有话题/实体删除，共享项仅撤销该来源贡献 → 事务提交 → 清空候选缓存 → **清除该文件全部本地图片**（`entity-images.js` `deleteFileImages`） |
+| 修改正文 | `revision++`、状态置「待解析」、撤销旧版本贡献，**须重新解析**；**清除该文件全部本地图片**（新版本需重新抽取） |
+| 仅改名  | 保留知识，只改显示名，图片不受影响                                                      |
 
 
 事务（`file-manager.js:8-17`）· A 类：先比对 `fileWorkspaceRaw`，他页已改则抛错不覆盖；写失败按旧值回滚四个 key，抛「请立即导出备份」。
@@ -580,7 +587,9 @@ stageTopics.map(t => ({id: t.local_id || t.id, name: t.name, scope: t.scope,
 - 搜索框对整个实体 JSON 做小写包含匹配；
 - 关系筛选单选。
 
-详情必须包含：话题归属（主 + 关联）、主类型（含 typeId 与待复核说明）、分面（含 basis 标签与依据）、来源证据、关系列表（强弱/方向/受控 ID/目标可跳转性）、复核说明。
+详情必须包含：话题归属（主 + 关联）、主类型（含 typeId 与待复核说明）、分面（含 basis 标签与依据）、来源证据、**来源配图（有则显示，缩略图异步加载，点击看原图）**、关系列表（强弱/方向/受控 ID/目标可跳转性）、复核说明。
+
+配图区块只做展示：不进入复核队列、不参与筛选、不计入导出判定；本地图片库里查不到的图片**静默移除该卡片**，不报错、不占位。
 
 ### 11.2 知识库 Excel 导出（「导出 Excel」）· A 类
 
@@ -596,7 +605,7 @@ stageTopics.map(t => ({id: t.local_id || t.id, name: t.name, scope: t.scope,
 
 - 计时从**接受本次点击**开始，到提示词同步、双版生成、保存与清理结束；文件正文提取不计入。
 - 三范围：`shared` 共享流程、`baseline`、`current`；并发事件按时间区间**合并为墙钟**，同时给出请求累计与次数。
-- 阶段清单预置（未执行也显示"未执行"）：`source / input / extraction_request / json_parse / topic_validation / entity_input / entity_validation / chunk_validation（单次口径，兼容保留）/ candidate_assembly / integration_input / integration_request / assembly / display / baseline_clone`。
+- 阶段清单预置（未执行也显示"未执行"）：分支阶段 `source / input / extraction_request / json_parse / topic_validation / entity_input / entity_validation / chunk_validation（单次口径，兼容保留）/ candidate_assembly / integration_input / integration_request / assembly / display / baseline_clone`；共享收尾新增 `image_stage（实体配图匹配）`，位于 `version_check` 之后、`save` 之前。
 - 口径红线：**阶段存在嵌套与并发，不可相加为总耗时**；接口耗时含网络与模型服务，不能拆分；相同 Prompt 复用基线时只记 `baseline_clone`，不复制基线计时；缓存只统计本轮命中。
 
 ### 11.3.1 实体配图（`entity-images.js`）· 独立旁路阶段 ⚠️ 新增
@@ -614,7 +623,17 @@ stageTopics.map(t => ({id: t.local_id || t.id, name: t.name, scope: t.scope,
 | 存储与展示  | 原图与 96 px 缩略图只存当前浏览器本地图片库，**不上传**；词条详情"来源配图"区块异步加载缩略图，点击看原图；配图是阅读辅助，**不是证据、不是关系**，不参与复核队列                           |
 | 级联     | 文件版本变化或删除文件 → 清除该文件全部本地图片；多来源实体按 imageId 去重、保留高分判定                                                                        |
 
-诊断码：`IMAGE_STAGE_SKIPPED / DISABLED / STOPPED / SOURCE_UNBOUND / SOURCE_UNAVAILABLE / NO_IMAGES / NO_ENTITIES / STORE_READ_FAILED / EXTRACT_FAILED / MODEL_NOT_CONFIGURED / MODEL_FAILED / MODEL_UNPARSEABLE / MODEL_UNKNOWN_ID / MODEL_REJECTED / WEAK_MATCH`。
+诊断码：`IMAGE_STAGE_SKIPPED / DISABLED / STOPPED / SOURCE_UNBOUND / SOURCE_UNAVAILABLE / NO_IMAGES / NO_ENTITIES / STORE_READ_FAILED / EXTRACT_FAILED / MODEL_NOT_CONFIGURED / MODEL_FAILED / MODEL_UNPARSEABLE / MODEL_UNKNOWN_ID / MODEL_REJECTED / WEAK_MATCH`。诊断只写 `result.imageStage.diagnostics`，**不进复核队列、不改 `metrics`**。
+
+**设置项**（入库测试页「实体配图」，`localStorage` `wiki_image_settings_v1`）：`enabled`（默认 true）、`modelId`（默认 `''` = 不调用模型）、`maxImages`（默认 24，上限 60）。**默认不调用模型**，因此未显式选择图片判定模型时不会额外请求模型；选了不支持图片输入的模型 → 捕获后写 `IMAGE_MODEL_FAILED` 并按规则降级。
+
+红线：
+
+1. 配图**不是证据、不是关系**，不得进入复核队列、不得参与筛选与导出判定；
+2. 配图阶段**不得改写** `steps` / `topics` / `entities` 任何既有字段；
+3. 配图阶段**任何异常都必须被吞掉**并降级为"无配图"，不得让本轮解析结果写不进知识浏览；
+4. 原图与缩略图**只存当前浏览器本地图片库**，不得上传云端；
+5. 模型返回的 `entity_id` **必须逐字来自本次候选清单**，否则丢弃并诊断。
 
 ### 11.4 两版对比导出（对比页「导出两版对比 Excel」/「导出对比 JSON」）· A 类
 
@@ -740,7 +759,9 @@ JSON 结构（便于转交分析）：
 - 禁止把实体阶段输入做成"完整单次输入 + 追加话题清单"——必须走精简输入；
 - 禁止在导出路径触发任何状态变更（含 `syncPrompt` / `markResultsStale`）；
 - 禁止为"让表格好看"裁剪或估算导出数据：无数据留空并说明，不拿历史值顶替；
-- 禁止自动重抽用户文件、禁止静默覆盖他人共享配置。
+- 禁止自动重抽用户文件、禁止静默覆盖他人共享配置；
+- 禁止把实体配图当作证据、关系或分面依据，禁止让配图阶段的失败阻断解析结果入库；
+- 禁止未经用户显式选择就调用图片判定模型（默认不调用，避免静默产生额外请求）。
 
 ---
 
@@ -749,10 +770,11 @@ JSON 结构（便于转交分析）：
 | 项              | 状态                                                                                                                  |
 | -------------- | ------------------------------------------------------------------------------------------------------------------- |
 | 线上应用           | `https://wiki-mvp-lab.app-tencent.workbuddy.host/`                                                                  |
+| 实体配图           | 线上**已发布**（`?v=20261018f`）；默认开启但**不调用模型**，需在入库测试页「实体配图」选一个支持图片输入的模型才会走模型复核                                     |
 | 产品上下文补全        | 线上**已生效**，本地与线上一致（contextual 投影 + 取不到回退已存分面）；⚠️ 规则条款待确认，见 §14                                                       |
 | 共享提示词          | 头部为 v5 内容；v6（短标题版）已回退，v7 是 restore 记录，历史未删                                                                          |
 | 线上「页面空白、按钮无响应」 | **未定位完成**。新开无数据浏览器表现正常，因此不能据此判定用户数据已丢失                                                                              |
-| 线上静态资源         | 脚本已带 `?v=20261015f` 版本戳；响应仍**无 `Cache-Control` / `ETag`**，`index.html` 本身可能被中间缓存，旧 HTML 配新 JS 的窗口未完全关闭 |
+| 线上静态资源         | 脚本已带 `?v=20261018f` 版本戳（含新增 `entity-images.js`）；响应仍**无 `Cache-Control` / `ETag`**，`index.html` 本身可能被中间缓存，旧 HTML 配新 JS 的窗口未完全关闭 |
 
 已排除项（不必重复排查）：
 
@@ -786,13 +808,14 @@ JSON 结构（便于转交分析）：
 - **对比导出**：10 页签齐全、两版并列且差值正确、差异与页面「查看变化」一致、无计时时不编造耗时、JSON 可解析且字段完整、导出后结果/Prompt/存储指纹不变；
 - **诊断可达**：`result.diagnostics` 与 `result.steps.diagnostics` 同一对象；`候选问题 / 无实体隔离话题 / 隔离关系 / 复核项` 四类在导出与界面均可见，覆盖率自检可写入 `diagnostics.coverage`；
 - **提示词**：追加版本、恢复留痕、旧版可读回；
+- **实体配图**：PDF/DOCX 内嵌图能被抽出并落到本地图片库；短边 < 80px 与超出 `maxImages` 的图被跳过；**无候选的图不调用模型**；一图一次请求且只带 ≤5 候选；模型返回的清单外 `entity_id` 被丢弃并写 `IMAGE_MODEL_UNKNOWN_ID`；强规则命中被模型否决 → 不采纳并写 `IMAGE_MODEL_REJECTED`；弱规则 + 模型 high/medium → 采纳 `model`；模型不可用 → 强规则降级 `rule`、弱规则不采纳；**配图阶段抛异常时本轮结果仍能写入知识浏览**；删文件/改正文后本地图片被清除；配图不进复核队列、不改 `metrics`、不参与导出判定；
 - **全流程**：无真实模型请求、无云写、storage 与业务数据指纹不变。
 
 ---
 
 ## 附录 A · 代码位置索引
 
-> 行号取自 v1.6 快照（线上 `?v=20261018a`），会随重构漂移；**定位以文件 + 函数名为准**.
+> 行号取自 v1.7 快照（线上 `?v=20261018f`），会随重构漂移；**定位以文件 + 函数名为准**.
 
 | 位置                                                                                                                | 类型 | 一句话说明                                              |
 | ----------------------------------------------------------------------------------------------------------------- | -- | -------------------------------------------------- |
@@ -827,3 +850,10 @@ JSON 结构（便于转交分析）：
 | `pipeline.js` `assembleIntegratedResult`                                                                           | A  | 全文整合映射、历史话题边界校验、主类型整合选择                             |
 | `pipeline.js` `addLocalPreview`                                                                                    | B  | 预览级 identityKey 合并与本地写入                            |
 | `file-manager.js` 写入事务 / 历史迁移 / 来源贡献                                                                              | A  | 事务回滚、无正文不补值、来源贡献分离存储与合并                             |
+| `entity-images.js` `extractPdfImages`                                                                              | A  | PDF 内嵌图抽取：pdf.js 操作符列表 + 同页邻近文字（优先取 `bitmap`）         |
+| `entity-images.js` `extractDocxImages`                                                                             | A  | DOCX 内嵌图抽取：JSZip 解包 `word/media/*` + `a:blip` 顺序 + 段落图注  |
+| `entity-images.js` `runStage`                                                                                      | A  | 配图主阶段：**唯一对外入口**，规则打分 → 模型复核 → 综合判定，整体可降级           |
+| `entity-images.js` `scoreCandidate` / `locateInSource`                                                             | A  | 规则定位：指名 +6 / 同段 ±300 字 +4 / 同章节 +2；文本归一化定位偏移          |
+| `entity-images.js` `reviewImageWithModel` / `parseReview`                                                          | A  | 模型读图复核：一图一次请求、≤5 候选、清单外 ID 丢弃                       |
+| `entity-images.js` `putImages` / `getImages` / `deleteFileImages`                                                  | A  | IndexedDB 本地图片库（原图 + 96px 缩略图，按 `fileId:revision` 键）    |
+| `entity-images.js` `renderEntityImages` / `hydrateImages` / `mergeImages`                                         | B  | 词条配图区块渲染、缩略图异步加载、多来源去重取高分                           |
