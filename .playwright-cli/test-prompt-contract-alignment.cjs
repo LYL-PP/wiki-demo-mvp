@@ -31,6 +31,14 @@ for(const match of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g))ne
   ok('STEP5分面门禁只注入一次',hits===1,{hits});
   const legacy=buildEntityStageInput({...DEFAULT_PROMPTS,step5:'用户自定义STEP5'},source,snapshot,context,[]);
   ok('自定义STEP5缺失时仍补齐门禁',legacy.split(gate).length-1===1,{hits:legacy.split(gate).length-1});
+  // 第一道门：产品/版本分面必须告诉模型挑哪一句，否则攻略正文里永远填不出产品。
+  ok('分面门禁说明挑哪一句',SEMANTIC_STEP5_RULES.includes('优先在本段选用同时指名该实体')&&SEMANTIC_STEP5_RULES.includes('并把这句同时作为该实体的证据与分面的quote'),SEMANTIC_STEP5_RULES.slice(0,60));
+  ok('schema同步给出分面quote口径',input.includes('可与实体证据同一句'));
+  ok('仍禁止只凭标题背景填产品',/只有文档标题、文档背景或全局版本.*不得填/.test(SEMANTIC_STEP5_RULES));
+  const oldStep5=PRIOR_CURRENT_STEP5_DEFAULT+PREVIOUS_SEMANTIC_STEP5_RULES;
+  ok('旧分面门禁按逐字一致升级',(()=>{const target={step5:oldStep5};wikiUpgradePromptDefaults(target,'新版');return target.step5===DEFAULT_PROMPTS.step5})());
+  const migrated=buildEntityStageInput({...DEFAULT_PROMPTS,step5:oldStep5},source,snapshot,context,[]);
+  ok('旧门禁在请求中被替换而非新旧并存',migrated.split(gate).length-1===1&&!migrated.includes('不能把文档标题、背景或版本无条件继承给所有实体'),{gate:migrated.split(gate).length-1});
 
   // 2. STEP 4 契约
   ok('STEP4不再要求模型做三值决策',!/只允许\s*reuse_existing/.test(DEFAULT_PROMPTS.step4)&&DEFAULT_PROMPTS.step4.includes('不要输出 reuse_existing/create_new'),DEFAULT_PROMPTS.step4.slice(0,80));
