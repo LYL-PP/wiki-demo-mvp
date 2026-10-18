@@ -513,11 +513,16 @@
         return !partialConflict && !parallelScope && names.some(value => prefixMatches(value, product));
       };
       const roles = new Map(), confirmedProducts = new Set();
+      // 实体自己声明的产品范围（可能为空）；只有它与候选产品一致时，才允许用同伴证据兜底。
+      const ownProduct = singleProduct(data.identityAnchors?.productIpScope);
       const addRole = (product, proof, role) => {
         if (!product || !matchesTopic(product)) return;
         const title = titleEvidence(file.text, product, ownEvidence).map(q => ({...q, source: {...source}}));
         const related = topicEvidence.filter(q => mentionsProduct(q.exact_quote, product));
-        const topicProof = related.length ? related : title;
+        // 攻略正文里产品名常只出现在游戏本体词条那一句：主话题的证据句往往没有产品名，标题也可能不是产品名开头。
+        // 允许用"同来源游戏本体实体的逐字证据"兜底，但仅限实体自身的身份锚点已独立声明同一产品——
+        // 这时同伴证据是相互印证，不是从其他章节广播。实体没有自身声明时仍严格拒绝（防跨章节广播）。
+        const topicProof = related.length ? related : title.length ? title : ownProduct === product ? proof : [];
         const combined = [...topicEvidence.filter(q => q.exact_quote.includes(product)), ...topicProof, ...proof];
         const competingName = combined.some(q => [...q.exact_quote.matchAll(/[《〈]([^《》〈〉]+)[》〉]/gu)].some(match =>
           match[1].trim().startsWith(product) && match[1].trim() !== product) ||

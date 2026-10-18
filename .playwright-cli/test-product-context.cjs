@@ -25,6 +25,7 @@ const SCENARIOS = [
   '主话题游戏锚点有 explicit 版本也不得继承',
   '仅主话题，不从关联话题广播',
   '跨主话题同来源仍可互证产品',
+  '自身身份与游戏本体互证时话题证据无产品名仍补全',
   '多产品身份范围拒绝',
   '跨产品主话题拒绝',
   '同来源已确认产品冲突拒绝',
@@ -437,6 +438,19 @@ async function main() {
       // 按主话题分组会让资源/机制类实体永远拿不到确认角色。确认角色应覆盖同来源全部话题。
       const r = await evaluate(() => {
         const f = productFixtures, x = f.make({ scope: null, anchor: true });
+        const gameTopicId = 'PC-T-GAME', anchor = f.data(x.anchor);
+        anchor.primaryTopic = gameTopicId; anchor.topics = [gameTopicId];
+        x.topics.push(f.bindTopic({ id: gameTopicId, name: '人工游戏本体的独立话题', object_anchor: x.product,
+          definition: '游戏本体话题', scope: '游戏本体', core_question: '这是一款什么游戏',
+          includes: ['游戏本体'], excludes: [], evidences: [] }, x.files[0]));
+        return f.project(x);
+      }); expectContext(r);
+    });
+    await test('自身身份与游戏本体互证时话题证据无产品名仍补全', async () => {
+      // 真实形态（原神攻略里的"原石"）：实体身份锚点已声明产品、游戏本体实体在另一个话题，
+      // 但主话题的证据句和章节标题里都没有产品名。两条信号一致时应补全，而不是 INSUFFICIENT。
+      const r = await evaluate(() => {
+        const f = productFixtures, x = f.make({ anchor: true, title: '# 人工目录', topicQuote: '本节只讨论道具用途。' });
         const gameTopicId = 'PC-T-GAME', anchor = f.data(x.anchor);
         anchor.primaryTopic = gameTopicId; anchor.topics = [gameTopicId];
         x.topics.push(f.bindTopic({ id: gameTopicId, name: '人工游戏本体的独立话题', object_anchor: x.product,
