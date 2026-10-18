@@ -3,5 +3,6 @@ node_modules/
 .playwright-cli/tmp-*.txt
 .playwright-cli/tmp-*.json
 *.log
+*.genie
 .DS_Store
 Thumbs.db
