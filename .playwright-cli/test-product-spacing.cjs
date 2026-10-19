@@ -42,9 +42,18 @@ for(const match of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g))ne
   const cleanParallel=run(CLEAN,parallel,'崩坏：星穹铁道');
   ok('并列话题在空格原文下仍拒绝',!spacedParallel.values.length&&spacedParallel.codes.some(c=>rejectCodes.includes(c)),spacedParallel);
   ok('并列话题在干净原文下仍拒绝',!cleanParallel.values.length&&cleanParallel.codes.some(c=>rejectCodes.includes(c)),cleanParallel);
-  // 4. 身份锚点为空时不猜产品（去空格比对不得放宽成"从话题名猜产品"）
+  // 4. 身份锚点为空时不猜产品（去空格/去冒号比对不得放宽成"从话题名猜产品"）
   const noScope=run(SPACED,good,'');
   ok('无身份产品范围时仍不猜产品',!noScope.values.length,noScope);
+  // 5. 冒号写法不一致：identity anchor 带全角冒号、话题名不带，仍须对齐
+  const colonScope='崩坏：星穹铁道', colonTopic='崩坏星穹铁道的沉浸奖励双倍分配';
+  const spacedColon=run(SPACED,colonTopic,colonScope);
+  const cleanColon=run(CLEAN,colonTopic,colonScope);
+  ok('话题名不带冒号时仍能对齐（空格原文）',spacedColon.values.length===1&&spacedColon.bases[0]==='contextual'&&!spacedColon.codes.length,spacedColon);
+  ok('话题名不带冒号时仍能对齐（干净原文）',cleanColon.values.length===1&&cleanColon.bases[0]==='contextual'&&!cleanColon.codes.length,cleanColon);
+  // 6. 去冒号不得把不同产品混为一谈：A 的副标题形态仍要被拒绝
+  const suffixTopic='崩坏：星穹铁道外传的沉浸奖励';
+  ok('续作后缀仍被拒绝',!run(CLEAN,suffixTopic,colonScope).values.length,run(CLEAN,suffixTopic,colonScope));
   return tests;
  });
  const passed=report.filter(t=>t.pass).length;

@@ -335,15 +335,19 @@
     };
     const continuation = rest => /^(?:\s*\d|\s*(?:外传|续作|续篇|续集|续章|番外|前传|后传|第[一二三四五六七八九十0-9]+[部代作]))/u.test(rest);
     const parallelSuffix = rest => /^\s*(?:与|和|及|或|、|&|\+|\/|\band\b|\bor\b|\bvs\b)/iu.test(rest);
-    // PDF 抽取常在字间插入空格（"崩 坏 ： 星 穹 铁 道"），逐字 indexOf/startsWith 必然失败，
-    // 于是显式产品分面与上下文补全两条路同时断掉。只在逐字形式不命中时再比一次去空格形式：
+    // 产品名在两处写法经常不一致：抽取会在字间插空格（"崩 坏 ： 星 穹 铁 道"），
+    // 模型给的 identity anchor 常带全角冒号（"崩坏：星穹铁道"）而话题名不带（"崩坏星穹铁道的…"）。
+    // 逐字 indexOf/startsWith 因此必然失败，显式分面与上下文补全两条路同时断掉。
+    // 依次尝试原样 → 去空格 → 去空格且去冒号；只在前面都不命中时才降级，
     // 已命中的场景行为不变，也不改原文、不改偏移量、不重算已存证据。
     const compact = value => format(value).replace(/\s+/gu, '');
+    const flatName = value => compact(value).replace(/[：:]/gu, '');
     const bothForms = (raw, product, test) => {
       const left = format(raw), right = format(product);
       if (test(left, right)) return true;
-      const squashed = compact(raw), flat = compact(product);
-      return squashed !== left || flat !== right ? test(squashed, flat) : false;
+      const forms = [[compact(raw), compact(product)], [flatName(raw), flatName(product)]];
+      for (const [a, b] of forms) if ((a !== left || b !== right) && test(a, b)) return true;
+      return false;
     };
     const prefixMatches = (raw, product) => bothForms(raw, product, (name, target) => {
       if (/^[《〈]/u.test(name)) {
