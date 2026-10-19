@@ -276,7 +276,11 @@ STEP 2–5 在同一段上发**两次**请求，不能合并成一次：
 
 **规格**：
 
-1. **PDF 抽取必须保留 pdf.js 的行尾标记**：`item.str + (item.hasEOL ? '\n' : ' ')`。丢掉 `hasEOL` 等于丢掉文档结构，属红线。
+1. **PDF 抽取必须保留 pdf.js 的行尾标记**，且**只在需要分词的一侧补空格**（`wikiJoinPdfItems`）：`hasEOL` 仍写 `\n`，其余位置仅当`前一段末字符`或`后一段首字符`是拉丁字母/数字、且首字符不是标点时才补空格。
+
+   > 中文 PDF 里 pdf.js 常把文本**逐字**切成 item，无条件补空格会把 `崩坏：星穹铁道 —— 2026 完整新手攻略` 变成 `崩 坏 ： 星 穹 铁 道   —— 2026   完 整 新 ⼿ 攻 略`。后果不止难看：标题/首行识别、章节切分、噪声行清理全部在畸形文本上跑，产品名的逐字比对也必然失败（见 §14）。**丢掉 `hasEOL` 等于丢掉文档结构；无条件补空格等于丢掉词边界，两者都是红线。**
+   >
+   > 该改动会让同一份 PDF 的抽取结果与旧版**逐字不同**（偏移量整体变化），因此**已入库的文件必须重新上传并重新解析**；旧存档仍保留旧正文，`bothForms` 兜底保证它们不会被判死。
 2. **标题识别不得只认行首**：`wikiHeadingHits(line)` 先走行级规则；行长 >120 字时再按 `WIKI_HEADING_RULES` 在行内找标题，要求前一字符是分隔符（空白、`━`、`|`、标点）且**不是字母数字**（避免 `v4.15`、`1995MB` 误判）。
 3. **标题只取标题本体**：`wikiHeadingTitle(line, from, markerLength)` 保留编号（如 `1.`），跳过编号后的空白，再在 `。！？；`、连续空白、`━━` 处截断，上限 60 字；结果用 `wikiCollapseSpace` 折叠空白（`1.   武学系统` → `1. 武学系统`）。
 4. `documentContext.headings` 与 `sections` 共用同一套识别结果，**不再各写一套正则**。
@@ -736,7 +740,8 @@ JSON 结构（便于转交分析）：
 - 只放宽**比对**，不改原文、不改偏移量、不重算已存证据，已命中的场景行为不变；
 - 去空格形式只在逐字形式失败后才启用，不得无条件替换；
 - 并列/跨产品后缀（与原神对比）在去空格后仍须识别出来，仍拒绝；
-- 该处理与 §5.4 章节覆盖率的"先折叠空白再比、额外比一次去空格形式"是同一招，不要各写一套。
+- 该处理与 §5.4 章节覆盖率的"先折叠空白再比、额外比一次去空格形式"是同一招，不要各写一套；
+- **兜底不等于可以不去修源头**：空格的根因在 §5.5 的 PDF 拼接，已在源头修掉；`bothForms` 只为**旧存档里已经带空格的正文**保留，不要在新增校验里依赖它。
 
 诊断码（`productContextIssues`）：`PRODUCT_CONTEXT_CONTRIBUTION_AMBIGUOUS`、`SOURCE_UNBOUND`、`SOURCE_STALE`、`EVIDENCE_UNVERIFIABLE`、`EXPLICIT_PRIORITY`、`PRIMARY_INVALID`、`TOPIC_UNBOUND`、`ENTITY_EVIDENCE_MISSING`、`TOPIC_AMBIGUOUS`、`IDENTITY_AMBIGUOUS`、`SCOPE_CONFLICT`、`CONFIRMED_CONFLICT`、`MULTIPLE_PRODUCTS`、`INSUFFICIENT`。
 

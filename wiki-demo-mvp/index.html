@@ -797,10 +797,15 @@ function renderPipeline(result){const names=['解析来源','识别话题','抽�
 const FILE_EXTENSIONS=new Set(['txt','md','markdown','csv','json','pdf','docx']);
 const parserPromises={};
 function loadBrowserParser(name,url){if(window[name])return Promise.resolve(window[name]);if(!parserPromises[name])parserPromises[name]=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src=url;script.onload=()=>window[name]?resolve(window[name]):reject(new Error('文件解析组件未能初始化，请刷新后重试。'));script.onerror=()=>reject(new Error('无法加载文件解析组件，请检查网络后重试。'));document.head.appendChild(script)}).catch(error=>{delete parserPromises[name];throw error});return parserPromises[name]}
+// pdf.js 常把中文逐字切成独立 item。无条件在每个 item 后补空格会把"崩坏：星穹铁道"变成
+// "崩 坏 ： 星 穹 铁 道"，随之失效的有：标题识别、章节切分、噪声行清理，以及产品名的逐字比对
+// （显式分面与上下文补全两条路同时断，表现为"身份锚点写了产品却永远识别不出来"）。
+// 只在需要分词的一侧补空格：两侧都是汉字时不补，任一侧是拉丁字符/数字时补，标点前不补。
+function wikiJoinPdfItems(items){let out='';for(const item of items||[]){const text=item?.str||'',prev=out.slice(-1),next=text.slice(0,1);if(out&&next&&!/\s/.test(prev)&&!/\s/.test(next)&&(/[A-Za-z0-9]/.test(prev)||/[A-Za-z0-9]/.test(next))&&!/^[，。、；：！？）》」』…·,.;:!?)\]]/.test(next))out+=' ';out+=text+(item?.hasEOL?'\n':'')}return out}
 async function extractPdfText(file){const pdfjs=await loadBrowserParser('pdfjsLib','https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js');pdfjs.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';const task=pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer())});const pdf=await task.promise;try{const pages=[];for(let number=1;number<=pdf.numPages;number++){const page=await pdf.getPage(number);const content=await page.getTextContent();// pdf.js marks the PDF's own line breaks on each item (hasEOL). Joining every item with a space
 // flattened a whole page into one line, which silently destroyed headings, section detection and
 // noise-line removal for every PDF. Keep the line breaks.
-pages.push(content.items.map(item=>(item.str||'')+(item.hasEOL?'\n':' ')).join(''));if(pages.join('\n').length>30000)throw new Error('提取正文超过 30000 字，请拆分文件后重试。')}return pages.join('\n')}finally{await pdf.destroy()}}
+pages.push(wikiJoinPdfItems(content.items));if(pages.join('\n').length>30000)throw new Error('提取正文超过 30000 字，请拆分文件后重试。')}return pages.join('\n')}finally{await pdf.destroy()}}
 async function extractDocxText(file){const mammoth=await loadBrowserParser('mammoth','https://cdn.jsdelivr.net/npm/mammoth@1.10.0/mammoth.browser.min.js');const result=await mammoth.extractRawText({arrayBuffer:await file.arrayBuffer()});return result.value}
 async function readSourceFile(file){if(!file)throw new Error('请先选择文件。');const extension=file.name.split('.').pop().toLowerCase();if(!FILE_EXTENSIONS.has(extension))throw new Error('不支持此文件类型，请选择 TXT、Markdown、CSV、JSON、PDF 或 DOCX。');if(!file.size)throw new Error('文件为空，请选择包含正文的文件。');if(file.size>10*1024*1024)throw new Error('文件超过 10 MB，请先缩小文件。');const raw=extension==='pdf'?await extractPdfText(file):extension==='docx'?await extractDocxText(file):await file.text();const normalized=extension==='pdf'||extension==='docx'?raw.replace(/[\u00a0\u202f\u3000]/g,' ').replace(/[\u00ad\u200b-\u200d\ufeff]/g,''):raw;const text=(typeof wikiCleanSourceNoise==='function'?wikiCleanSourceNoise(normalized.replace(/\r\n?/g,'\n').replace(/\u0000/g,'')):normalized.replace(/\r\n?/g,'\n').replace(/\u0000/g,'')).trim();if(!text)throw new Error(extension==='pdf'?'没有提取到可用文字；扫描版 PDF 暂不支持 OCR。':'文件中没有可用文字。');if(text.includes('\ufffd'))throw new Error('文件编码无法正确识别，请保存为 UTF-8 后重试。');if(text.length>30000)throw new Error('提取正文超过 30000 字，请拆分文件后重试。');return {name:file.name,size:file.size,text}}
 function setSourceStatus(message,error=false){const status=document.getElementById('sourceStatus');status.textContent=message;status.className='source-status small '+(error?'error':'muted')}
@@ -1489,9 +1494,9 @@ window.wikiRunTiming=(()=>{
 const timingOriginalInit=init;
 init=function(){wikiFailureDiagnostics.install();wikiRunTiming.install();const result=timingOriginalInit.apply(this,arguments);initComparisonUI();return result};
 </script>
-<script src='./semantic-tags.js?v=20261018k'></script>
-<script src="./pipeline.js?v=20261018k"></script>
-<script src="./entity-images.js?v=20261018k"></script>
-<script src="./file-manager.js?v=20261018k"></script>
-<script src="./prompt-history.js?v=20261018k"></script>
+<script src='./semantic-tags.js?v=20261018l'></script>
+<script src="./pipeline.js?v=20261018l"></script>
+<script src="./entity-images.js?v=20261018l"></script>
+<script src="./file-manager.js?v=20261018l"></script>
+<script src="./prompt-history.js?v=20261018l"></script>
 <script>wikiPromptHistory.init();init();</script></body></html>
