@@ -105,7 +105,72 @@ const WIKI_NOISE_LINE_RULES=[
 const WIKI_NOISE_BLOCK_START=/^\s*(?:大家都在搜|推荐阅读|登录即可查看)/;
 const WIKI_NOISE_BLOCK_TERMINATOR=/^\s*https?:\/\/\S+\s*\d+\/\d+\s*$/;
 function wikiIsNoiseLine(line){const value=String(line??'').trim();return !!value&&WIKI_NOISE_LINE_RULES.some(rule=>rule.test(value))}
-function wikiCleanSourceNoise(text){
+// Page headers and footers repeat on every page, so "occurs at least 3 times and is spread across the
+// whole document" identifies them without any site-specific rule. Once confirmed as chrome, a sample
+// must also be stripped where a short page squeezes it onto the same line as real text: a footer left
+// inside a sentence breaks every quote that spans it, because evidence has to be verbatim.
+const WIKI_REPEAT_MIN_COUNT=3,WIKI_REPEAT_MIN_LINE=4,WIKI_REPEAT_MIN_SAMPLE=6,WIKI_REPEAT_SPAN_RATIO=0.5;
+// A URL followed by N/M is a page marker even when it is not caught as a repeating line.
+const WIKI_NOISE_FRAGMENT_RULES=[/https?:\/\/\S+\s+\d{1,3}\/\d{1,3}/g];
+function wikiRepeatingNoiseSamples(text){
+  const lines=String(text??'').split('\n'),counter=new Map(),samples=new Set();
+  lines.forEach((line,index)=>{
+    const raw=line.trim();
+    if(raw.length<WIKI_REPEAT_MIN_LINE)return;
+    // A heading that recurs is structure, not chrome; removing it would destroy the section scaffold.
+    if(wikiHeadingLevel(raw))return;
+    // Two keys: verbatim (a footer repeats exactly) and digit-folded (a header differs only by page number).
+    for(const key of new Set([raw,raw.replace(/\d+/g,'#')])){
+      if(!counter.has(key))counter.set(key,new Set());
+      counter.get(key).add(index);
+    }
+  });
+  for(const [key,indexes] of counter){
+    const list=[...indexes].sort((a,b)=>a-b);
+    if(list.length<WIKI_REPEAT_MIN_COUNT)continue;
+    // Periodic chrome is spread over the whole document; a repeated body line clusters instead.
+    if(list[list.length-1]-list[0]<lines.length*WIKI_REPEAT_SPAN_RATIO)continue;
+    if(key.length<WIKI_REPEAT_MIN_SAMPLE)continue;
+    // Repetition alone is not enough: a tip repeated at the end of each section is content. Chrome
+    // always carries a page number, a timestamp or a URL, so require one of those (or a known noise
+    // line) before anything is removed.
+    if(!/\d/.test(key)&&!/https?:\/\//.test(key)&&!wikiIsNoiseLine(key))continue;
+    samples.add(key);
+  }
+  return samples;
+}
+function wikiNoiseRanges(text,samples){
+  const source=String(text??''),ranges=[];
+  for(const sample of samples){
+    let from=0,at;
+    while((at=source.indexOf(sample,from))>=0){
+      const before=at?source[at-1]:'\n',after=source[at+sample.length]||'\n';
+      if(/\s/.test(before)&&/\s/.test(after))ranges.push([at,at+sample.length]);
+      from=at+1;
+    }
+  }
+  for(const rule of WIKI_NOISE_FRAGMENT_RULES)for(const match of source.matchAll(rule))ranges.push([match.index,match.index+match[0].length]);
+  ranges.sort((a,b)=>a[0]-b[0]||a[1]-b[1]);
+  const merged=[];
+  for(const range of ranges){
+    const last=merged.at(-1);
+    if(last&&range[0]<=last[1])last[1]=Math.max(last[1],range[1]);
+    else merged.push([...range]);
+  }
+  return merged;
+}
+function wikiStripRanges(text,ranges){
+  let out='',cursor=0;
+  for(const [start,end] of ranges){
+    out+=text.slice(cursor,start).replace(/[ \t]+$/,'');
+    cursor=Math.max(cursor,end);
+    while(cursor<text.length&&/[ \t]/.test(text[cursor]))cursor++;
+  }
+  return out+text.slice(cursor);
+}
+// `samples` receives the distinct chrome strings that were removed, so the caller can show what the
+// program decided was not content. Chrome is periodic, so a handful of samples covers every occurrence.
+function wikiCleanSourceNoise(text,samples){
   const source=String(text??'');if(!source.trim())return source;
   const lines=source.split('\n'),keep=new Array(lines.length).fill(true);
   for(let i=0;i<lines.length;i++){
@@ -115,8 +180,14 @@ function wikiCleanSourceNoise(text){
     // A rail runs until the next page-footer URL line; bail out instead of eating the article.
     for(let j=i+1;j<lines.length&&j<=i+80;j++){keep[j]=false;if(WIKI_NOISE_BLOCK_TERMINATOR.test(lines[j].trim())){i=j;break}}
   }
-  const cleaned=lines.filter((_,i)=>keep[i]).join('\n').replace(/\n{3,}/g,'\n\n').trim();
-  return cleaned.length>=source.trim().length*0.4?cleaned:source.trim();
+  const base=lines.filter((_,i)=>keep[i]).join('\n');
+  const repeats=wikiRepeatingNoiseSamples(base),ranges=wikiNoiseRanges(base,repeats);
+  const cleaned=(ranges.length?wikiStripRanges(base,ranges):base).replace(/[ \t]+$/gm,'').replace(/\n{3,}/g,'\n\n').trim();
+  // Removing more than 60% means the detector went wrong, not that the document is chrome.
+  if(cleaned.length<source.trim().length*0.4)return source.trim();
+  // Only report what was actually removed; the fallback above removes nothing.
+  if(Array.isArray(samples)&&ranges.length)for(const sample of repeats)samples.push(sample);
+  return cleaned;
 }
 function wikiHeadingLevel(line){
   const value=String(line??'').trim();
