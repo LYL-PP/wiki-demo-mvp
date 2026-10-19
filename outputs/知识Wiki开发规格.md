@@ -1,6 +1,6 @@
 # 游戏研发知识 Wiki · 开发规格文档
 
-> **版本**：v1.8 ｜ **日期**：2026-10-19 ｜ **依据**：`wiki-demo-mvp/` 源码（线上 `?v=20261018i`）  
+> **版本**：v1.9 ｜ **日期**：2026-10-19 ｜ **依据**：`wiki-demo-mvp/` 源码（线上 `?v=20261018n`）  
 > **线上地址**：<https://wiki-mvp-lab.app-tencent.workbuddy.host/>  
 > **适用对象**：接手本项目的开发、测试。本文只写**必须遵守的契约与判定规则**，不写设计讨论。
 
@@ -465,6 +465,25 @@ stageTopics.map(t => ({id: t.local_id || t.id, name: t.name, scope: t.scope,
 
 **话题阶段空输出不得静默**：分段有实体候选但 `topics` 为空数组时，写入 `candidate_issues(field='topic_stage_empty')` 并说明「实体将全部因无有效话题证据被隔离，结果会是 0 话题 0 实体，这不是实体抽取失败」。程序仍按 0 候选继续，不伪造话题。
 
+### 7.5 `product_ip_scope` 的填写口径在**代码**里，不在可编辑提示词里 · A 类
+
+`anchors.product_ip_scope` 是**上下文补全的唯一身份入口**（见 §14）：它为空时，身份路径不启动，只能靠同伴确认；同伴也都没有产品时就成了鸡生蛋。因此它的字段口径是硬门禁，不是 Prompt 文案。
+
+**位置**：`pipeline.js` `buildModelInputCore` 生成的实体输出 schema（`只输出完整JSON：{...}` 内的 `anchors` 段），由程序拼进每次请求。话题阶段与实体阶段**共用同一段**。`DEFAULT_PROMPTS`（UI 可编辑的 step2/3/4/5）里**没有**这个字段——**改提示词改不到它，只能改代码**。
+
+**现行文案**：
+
+> `product_ip_scope`：该实体的身份归属范围（它属于哪个产品/IP）：来源整体只讲一个产品/IP、且该实体按语义属于它就填具体名称；不要以"证据句里有没有出现产品名"为条件——证据门禁由程序另行校验；跨产品/多IP/无法判定填null
+
+**为什么必须这么写**：早期文案是「当前来源只涉及一个产品/IP**且该实体证据落在其范围内**时填」，模型把它理解成"证据句里必须出现产品名"。中文攻略正文里产品名通常只出现在标题和个别词条，逐条实体的证据句里几乎没有 → 模型大量填 `null` → 产品分面整体失效。
+
+硬约束：
+
+1. 口径是**身份归属范围**，不是"证据句里有没有提到产品名"；证据校验由 §8.2/§8.3 与 §14 各自负责，不得在身份锚点里重复设限；
+2. 改这段文案必须同步改 `test-prompt-contract-alignment.cjs` 里盯它的断言（现 21 项）；
+3. 改 schema **不改写已入库结果**，必须重新解析来源才会生效；
+4. 该字段仍**不得**从文档标题/背景推断——那条红线在 STEP 5 门禁里（`仍禁止只凭标题背景填产品` 断言仍在）。
+
 ---
 
 ## 8. 索引规则
@@ -735,13 +754,24 @@ JSON 结构（便于转交分析）：
 8. 须有同来源逐字话题证据或可靠标题覆盖；
 9. 角色唯一且无冲突 → 产出 `basis:'contextual'`。
 
-**产品名的逐字比对必须容忍抽取空格**· A 类：PDF 抽取常在每个字之间插入空格（`崩 坏 ： 星 穹 铁 道`），而 `mentionsProduct`（`indexOf`）与 `prefixMatches`（`startsWith`）都是逐字匹配，逐字形式必然失败——显式分面与上下文补全两条路会同时断掉，界面表现为"身份锚点明明写了产品，所属产品仍是未识别"。因此这两个函数必须先按 `format()` 形式比对，**不命中时再比一次去空格形式**（`bothForms`）。约束：
+**产品名的逐字比对必须容忍写法差异**· A 类：`mentionsProduct`（`indexOf`）与 `prefixMatches`（`startsWith`）都是逐字匹配，产品名两处写法只要不一致就必然失败——显式分面与上下文补全两条路同时断掉，界面表现为"身份锚点明明写了产品，所属产品仍是未识别"。两种已知差异：
+
+1. **抽取空格**：`崩 坏 ： 星 穹 铁 道`（根因在 §5.5 的 PDF 拼接，已在源头修掉）；
+2. **冒号写法**：identity anchor 常带全角冒号（`崩坏：星穹铁道`），话题名常常不带（`崩坏星穹铁道的沉浸奖励双倍分配`）。
+
+因此 `bothForms` 依次降级尝试三种形式：**原样 → 去空格 → 去空格且去冒号**（`format` / `compact` / `flatName`）。约束：
 
 - 只放宽**比对**，不改原文、不改偏移量、不重算已存证据，已命中的场景行为不变；
-- 去空格形式只在逐字形式失败后才启用，不得无条件替换；
-- 并列/跨产品后缀（与原神对比）在去空格后仍须识别出来，仍拒绝；
+- 后一种形式只在前面全部失败后才启用，不得无条件替换（`X外传`、`X：续作` 等后缀仍须拒绝）；
 - 该处理与 §5.4 章节覆盖率的"先折叠空白再比、额外比一次去空格形式"是同一招，不要各写一套；
-- **兜底不等于可以不去修源头**：空格的根因在 §5.5 的 PDF 拼接，已在源头修掉；`bothForms` 只为**旧存档里已经带空格的正文**保留，不要在新增校验里依赖它。
+- **兜底不等于可以不去修源头**：`bothForms` 只为**旧存档里已经带空格的正文**与模型/话题名之间的冒号差异保留，不要在新增校验里依赖它。
+
+**未识别必须有可见原因**· A 类：产品为空时界面不得只写"未识别"——这三个字无法区分"原文没提产品名"与"程序误判"。`renderSemanticFacetRows` 必须把 `productContextIssues` 的**码 + 理由 + 来源文件**铺在下面。只读展示，不改判定。
+
+**两个现行卡点（均属规则，不是缺陷）**：
+
+- 身份 `review`（`identityDecision==='review'` 或含 `ENTITY_IDENTITY_REVIEW`）→ 直接退出并报 `PRODUCT_CONTEXT_IDENTITY_AMBIGUOUS`，**即使 `product_ip_scope` 有值也不补全**；
+- `product_ip_scope` 为空且身份正常 → 身份路径不启动，只能靠同伴确认；同来源没有任何实体拿到产品时（鸡生蛋）报 `PRODUCT_CONTEXT_INSUFFICIENT`。见 §7.5。
 
 诊断码（`productContextIssues`）：`PRODUCT_CONTEXT_CONTRIBUTION_AMBIGUOUS`、`SOURCE_UNBOUND`、`SOURCE_STALE`、`EVIDENCE_UNVERIFIABLE`、`EXPLICIT_PRIORITY`、`PRIMARY_INVALID`、`TOPIC_UNBOUND`、`ENTITY_EVIDENCE_MISSING`、`TOPIC_AMBIGUOUS`、`IDENTITY_AMBIGUOUS`、`SCOPE_CONFLICT`、`CONFIRMED_CONFLICT`、`MULTIPLE_PRODUCTS`、`INSUFFICIENT`。
 
@@ -790,8 +820,11 @@ JSON 结构（便于转交分析）：
 | 产品上下文补全        | 线上**已生效**，本地与线上一致（contextual 投影 + 取不到回退已存分面）；⚠️ 规则条款待确认，见 §14                                                       |
 | 共享提示词          | 头部为 v5 内容；v6（短标题版）已回退，v7 是 restore 记录，历史未删                                                                          |
 | 线上「页面空白、按钮无响应」 | **未定位完成**。新开无数据浏览器表现正常，因此不能据此判定用户数据已丢失                                                                              |
-| 线上静态资源         | 脚本已带 `?v=20261018i` 版本戳（含新增 `entity-images.js`）；响应仍**无 `Cache-Control` / `ETag`**，`index.html` 本身可能被中间缓存，旧 HTML 配新 JS 的窗口未完全关闭 |
+| 线上静态资源         | 脚本已带 `?v=20261018n` 版本戳（含新增 `entity-images.js`）；响应仍**无 `Cache-Control` / `ETag`**，`index.html` 本身可能被中间缓存，旧 HTML 配新 JS 的窗口未完全关闭 |
 | 话题归属修复         | 线上**已生效**（`?v=20261018i`）：整合建议的话题只要命中已确认话题 ID 即采纳（`topic_basis:'integration'`）；凭空 ID 仍拒绝。见 §6.2 |
+| PDF 抽取空格         | 线上**已修复**（`?v=20261018l`）：只在需分词的一侧补空格。⚠️ **已入库文件必须重新上传并重新解析**，旧存档正文仍是带空格的旧版本。见 §5.5 |
+| 产品名比对           | 线上**已修复**（`?v=20261018j` 空格 / `?v=20261018m` 冒号）：原样 → 去空格 → 去空格且去冒号三级降级。见 §14 |
+| `product_ip_scope` 口径 | 线上**已改写**（`?v=20261018n`）：身份归属范围，不以证据句含产品名为条件。**在代码里，不在可编辑提示词里**。见 §7.5 |
 
 已排除项（不必重复排查）：
 
@@ -825,6 +858,10 @@ JSON 结构（便于转交分析）：
 - **导出**：知识库 5 表齐全、单元格文本化、长文本续页可还原、无副作用；
 - **对比导出**：10 页签齐全、两版并列且差值正确、差异与页面「查看变化」一致、无计时时不编造耗时、JSON 可解析且字段完整、导出后结果/Prompt/存储指纹不变；
 - **诊断可达**：`result.diagnostics` 与 `result.steps.diagnostics` 同一对象；`候选问题 / 无实体隔离话题 / 隔离关系 / 复核项` 四类在导出与界面均可见，覆盖率自检可写入 `diagnostics.coverage`；
+- **PDF 文本拼接**：中文逐字 item 拼回连续文本（不得出现 `崩 坏 ： 星 穹 铁 道`）；拉丁词之间、数字与中文之间仍保留空格；中文标点前不补空格；`hasEOL` 仍产出换行；item 自带前导空格时不重复补；空输入不抛错；
+- **产品名比对**：空格原文与干净原文得到同一产品值（`basis:'contextual'`）；identity anchor 带全角冒号而话题名不带时仍能对齐；并列话题（与原神对比）、续作后缀（`X外传`）在两种原文下都必须拒绝；无身份产品范围时不得猜产品；
+- **产品未识别可见**：产品为空时界面必须显示 `productContextIssues` 的码 + 理由 + 来源文件，不得只显示"未识别"；
+- **`product_ip_scope` 口径**：schema 必须写明"身份归属范围"且明确"不以证据句里有没有出现产品名为条件"；改文案必须同步改 `test-prompt-contract-alignment.cjs` 的对应断言；`仍禁止只凭标题背景填产品` 断言必须仍通过；
 - **提示词**：追加版本、恢复留痕、旧版可读回；
 - **实体配图**：PDF/DOCX 内嵌图能被抽出并落到本地图片库；短边 < 80px 与超出 `maxImages` 的图被跳过；**无候选的图不调用模型**；一图一次请求且只带 ≤5 候选；模型返回的清单外 `entity_id` 被丢弃并写 `IMAGE_MODEL_UNKNOWN_ID`；强规则命中被模型否决 → 不采纳并写 `IMAGE_MODEL_REJECTED`；弱规则 + 模型 high/medium → 采纳 `model`；模型不可用 → 强规则降级 `rule`、弱规则不采纳；**配图阶段抛异常时本轮结果仍能写入知识浏览**；删文件/改正文后本地图片被清除；配图不进复核队列、不改 `metrics`、不参与导出判定；
 - **全流程**：无真实模型请求、无云写、storage 与业务数据指纹不变。
@@ -833,7 +870,7 @@ JSON 结构（便于转交分析）：
 
 ## 附录 A · 代码位置索引
 
-> 行号取自 v1.8 快照（线上 `?v=20261018i`），会随重构漂移；**定位以文件 + 函数名为准**.
+> 行号取自 v1.9 快照（线上 `?v=20261018n`），会随重构漂移；**定位以文件 + 函数名为准**.
 
 | 位置                                                                                                                | 类型 | 一句话说明                                              |
 | ----------------------------------------------------------------------------------------------------------------- | -- | -------------------------------------------------- |
@@ -852,12 +889,15 @@ JSON 结构（便于转交分析）：
 | `semantic-tags.js:158` 起 `addStructured`                                                                           | A  | 分面结构化门禁（见 §8.2 完整用例）                               |
 | `semantic-tags.js` `semanticFacetStorage`                                                                           | A  | 已存分面回读（页面/导出共用同一口径）                                |
 | `semantic-tags.js` `entitySemanticFacets`（自 308 行起）                                                                | ⚠️ | 产品上下文投影，规格待定稿                                      |
+| `index.html` `wikiJoinPdfItems`                                                                                    | A  | PDF 文本拼接：`hasEOL` 写换行，其余只在需分词的一侧补空格（见 §5.5）   |
+| `semantic-tags.js` `compact` / `flatName` / `bothForms`                                                             | A  | 产品名比对三级降级：原样 → 去空格 → 去空格且去冒号（见 §14）             |
 | `pipeline.js` `wikiCleanSourceNoise`                                                                               | C  | 源文本站点噪声清洗，保守兜底（清洗后 <40% 则放弃）                       |
 | `pipeline.js` `splitSourceForModel` / `wikiSectionBlocks` / `wikiSplitRange`                                        | C  | 结构化分段，段带 `sectionPath`，只锁 `coreStart/coreEnd` 契约     |
 | `pipeline.js` `wikiDocumentContext`                                                                                | C  | 文档背景与 `sections`（覆盖率自检的章节基准）                       |
 | `pipeline.js` `buildTopicStageInput` / `validateTopicStage`                                                         | A  | 阶段一：话题候选 + `coverage` 回执校验                         |
 | `pipeline.js` `buildEntityStageInput` / `validateEntityStage`                                                       | A  | 阶段二：精简输入（entitiesOnly）+ 实体校验，只引用阶段一已确认话题           |
 | `pipeline.js` `buildModelInputCore` / `buildModelInput`                                                            | C  | 单次 / 精简输入参数化，原签名保留                                 |
+| `pipeline.js` `buildModelInputCore`（实体输出 schema）                                                                 | A  | `product_ip_scope` 填写口径硬编码在此，**改提示词改不到**（见 §7.5）   |
 | `pipeline.js` `validateChunkCandidates`                                                                            | A  | 单次口径候选校验（两阶段组合，供对照与旧测试）                            |
 | `pipeline.js` `WIKI_IDLE_TIMEOUT_MS` / `WIKI_TOTAL_TIMEOUT_MS`                                                      | A  | 150 秒无数据 / 300 秒总时限                                |
 | `pipeline.js` `processSource`                                                                                      | A  | 两阶段调度、分段缓存（`sectionPath` 入 key）、末段章节覆盖率自检          |
