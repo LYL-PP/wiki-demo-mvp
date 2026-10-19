@@ -335,36 +335,44 @@
     };
     const continuation = rest => /^(?:\s*\d|\s*(?:外传|续作|续篇|续集|续章|番外|前传|后传|第[一二三四五六七八九十0-9]+[部代作]))/u.test(rest);
     const parallelSuffix = rest => /^\s*(?:与|和|及|或|、|&|\+|\/|\band\b|\bor\b|\bvs\b)/iu.test(rest);
-    const prefixMatches = (raw, product) => {
-      const name = format(raw);
+    // PDF 抽取常在字间插入空格（"崩 坏 ： 星 穹 铁 道"），逐字 indexOf/startsWith 必然失败，
+    // 于是显式产品分面与上下文补全两条路同时断掉。只在逐字形式不命中时再比一次去空格形式：
+    // 已命中的场景行为不变，也不改原文、不改偏移量、不重算已存证据。
+    const compact = value => format(value).replace(/\s+/gu, '');
+    const bothForms = (raw, product, test) => {
+      const left = format(raw), right = format(product);
+      if (test(left, right)) return true;
+      const squashed = compact(raw), flat = compact(product);
+      return squashed !== left || flat !== right ? test(squashed, flat) : false;
+    };
+    const prefixMatches = (raw, product) => bothForms(raw, product, (name, target) => {
       if (/^[《〈]/u.test(name)) {
         const close = name[0] === '《' ? '》' : '〉', end = name.indexOf(close);
         // 书名号内是完整名称，不把《产品：副标题》误作《产品》。
-        return end > 0 && name.slice(1, end).trim() === product && !continuation(name.slice(end + 1));
+        return end > 0 && name.slice(1, end).trim() === target && !continuation(name.slice(end + 1));
       }
-      if (!name.startsWith(product)) return false;
-      const rest = name.slice(product.length);
+      if (!name.startsWith(target)) return false;
+      const rest = name.slice(target.length);
       return !continuation(rest) && (!rest || /^(?:中的|的|[:：\-—–\s、])/u.test(rest));
-    };
-    const mentionsProduct = (raw, product) => {
-      const quote = format(raw);
+    });
+    const mentionsProduct = (raw, product) => bothForms(raw, product, (quote, target) => {
       let cursor = 0;
-      while ((cursor = quote.indexOf(product, cursor)) >= 0) {
-        const start = cursor, end = cursor + product.length;
+      while ((cursor = quote.indexOf(target, cursor)) >= 0) {
+        const start = cursor, end = cursor + target.length;
         cursor = end;
         const open = Math.max(quote.lastIndexOf('《', start), quote.lastIndexOf('〈', start));
         const closed = Math.max(quote.lastIndexOf('》', start), quote.lastIndexOf('〉', start));
         if (open > closed) {
           const close = quote[open] === '《' ? '》' : '〉', stop = quote.indexOf(close, end);
-          if (stop >= 0 && quote.slice(open + 1, stop).trim() === product && !continuation(quote.slice(stop + 1))) return true;
+          if (stop >= 0 && quote.slice(open + 1, stop).trim() === target && !continuation(quote.slice(stop + 1))) return true;
           continue;
         }
-        if (!/[\p{L}\p{N}_]/u.test(product[0]) || !/[A-Za-z0-9_]/u.test(quote[start - 1] || '')) {
+        if (!/[\p{L}\p{N}_]/u.test(target[0]) || !/[A-Za-z0-9_]/u.test(quote[start - 1] || '')) {
           if (!/[A-Za-z0-9_]/u.test(quote[end] || '') && !continuation(quote.slice(end))) return true;
         }
       }
       return false;
-    };
+    });
     const index = object(productContextIndex) ? productContextIndex : {}, storageCache = index.storage ??= new Map();
     const storageFacts = raw => {
       if (!storageCache.has(raw)) storageCache.set(raw, semanticFacetStorage(raw));

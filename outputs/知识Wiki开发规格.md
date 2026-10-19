@@ -731,6 +731,13 @@ JSON 结构（便于转交分析）：
 8. 须有同来源逐字话题证据或可靠标题覆盖；
 9. 角色唯一且无冲突 → 产出 `basis:'contextual'`。
 
+**产品名的逐字比对必须容忍抽取空格**· A 类：PDF 抽取常在每个字之间插入空格（`崩 坏 ： 星 穹 铁 道`），而 `mentionsProduct`（`indexOf`）与 `prefixMatches`（`startsWith`）都是逐字匹配，逐字形式必然失败——显式分面与上下文补全两条路会同时断掉，界面表现为"身份锚点明明写了产品，所属产品仍是未识别"。因此这两个函数必须先按 `format()` 形式比对，**不命中时再比一次去空格形式**（`bothForms`）。约束：
+
+- 只放宽**比对**，不改原文、不改偏移量、不重算已存证据，已命中的场景行为不变；
+- 去空格形式只在逐字形式失败后才启用，不得无条件替换；
+- 并列/跨产品后缀（与原神对比）在去空格后仍须识别出来，仍拒绝；
+- 该处理与 §5.4 章节覆盖率的"先折叠空白再比、额外比一次去空格形式"是同一招，不要各写一套。
+
 诊断码（`productContextIssues`）：`PRODUCT_CONTEXT_CONTRIBUTION_AMBIGUOUS`、`SOURCE_UNBOUND`、`SOURCE_STALE`、`EVIDENCE_UNVERIFIABLE`、`EXPLICIT_PRIORITY`、`PRIMARY_INVALID`、`TOPIC_UNBOUND`、`ENTITY_EVIDENCE_MISSING`、`TOPIC_AMBIGUOUS`、`IDENTITY_AMBIGUOUS`、`SCOPE_CONFLICT`、`CONFIRMED_CONFLICT`、`MULTIPLE_PRODUCTS`、`INSUFFICIENT`。
 
 硬约束：
