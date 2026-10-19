@@ -35,7 +35,8 @@ for(const match of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g))ne
   ok('分面门禁说明挑哪一句',SEMANTIC_STEP5_RULES.includes('优先在本段选用同时指名该实体')&&SEMANTIC_STEP5_RULES.includes('并把这句同时作为该实体的证据与分面的quote'),SEMANTIC_STEP5_RULES.slice(0,60));
   ok('schema同步给出分面quote口径',input.includes('可与实体证据同一句'));
   // 第二道门：identity-product-scope 路径只在 product_ip_scope 非空时启动，字段口径必须写清。
-  ok('schema给出product_ip_scope填写口径',input.includes('当前来源只涉及一个产品/IP')&&input.includes('跨产品/多IP/无法判定填null'));
+  ok('schema给出product_ip_scope填写口径',input.includes('该实体的身份归属范围')&&input.includes('跨产品/多IP/无法判定填null'));
+  ok('schema明确不得以证据句含产品名为条件',input.includes('不要以“证据句里有没有出现产品名”为条件'));
   ok('仍禁止只凭标题背景填产品',/只有文档标题、文档背景或全局版本.*不得填/.test(SEMANTIC_STEP5_RULES));
   const oldStep5=PRIOR_CURRENT_STEP5_DEFAULT+PREVIOUS_SEMANTIC_STEP5_RULES;
   ok('旧分面门禁按逐字一致升级',(()=>{const target={step5:oldStep5};wikiUpgradePromptDefaults(target,'新版');return target.step5===DEFAULT_PROMPTS.step5})());
